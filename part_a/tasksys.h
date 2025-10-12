@@ -6,6 +6,7 @@
 #include <thread>
 #include <iostream>
 #include <mutex>
+#include <condition_variable>
 
 template <typename ...Args>
 inline void debug_print(const char* msg, Args... args) {
@@ -51,11 +52,15 @@ class TaskSystemParallelSpawn: public ITaskSystem {
 
 class Runtime {
 public:
-    void add_job(IRunnable* runnable, int total_tasks, int total_threads) {
-        m_complete_tasks.store(0);
-        m_next_tasks.store(0);
+    void add_job(IRunnable* runnable, int total_tasks) {
         m_runnable = runnable;
+        m_next_tasks.store(0);
+
+        m_complete_tasks.store(0);
         m_total_tasks = total_tasks;
+
+        std::atomic_thread_fence(std::memory_order_release);
+        m_active.store(true);
     }
 
     void run(int i)
@@ -68,7 +73,8 @@ public:
     }
     
     bool completed() {
-        return m_complete_tasks >= m_total_tasks;
+        auto complete = m_complete_tasks.load();
+        return complete != 0 and complete >= m_total_tasks;
     }
 
     void mark_complete() {
@@ -79,25 +85,21 @@ public:
     std::atomic<int> m_complete_tasks{0};
     std::atomic<int> m_thread_wait{0};
     std::atomic<int> m_thread_started{0};
-    int m_total_tasks;
+    std::atomic<bool> m_active{false};
+    volatile int m_total_tasks;
     IRunnable* m_runnable;
 };
 
 template <typename Context, bool spinning = false>
 inline void thread_executor(int thread_id, Context* context) {
     auto &m_done = context->m_done;
-    auto& runtime = context->m_runtime;
-
-    auto yield = [](){
-        if (not spinning) {
-            sched_yield();
-        }
-    };
+    auto &runtime = context->m_runtime;
 
     while (not m_done) {
-        while (not runtime.completed())
+        while (not runtime.completed() and runtime.m_active)
         {
             int process_id = runtime.next_task();
+            // debug_print("Thread %d picked task %d\n", thread_id, process_id);
             if (process_id >= runtime.m_total_tasks) {
                 debug_print("Thread %d no more tasks, exiting\n", thread_id);
                 break;
@@ -106,7 +108,17 @@ inline void thread_executor(int thread_id, Context* context) {
             runtime.mark_complete();
         }
 
-        debug_print("Thread %d finished, is_completed: %b, tasks: %d\n", thread_id, runtime.completed(), runtime.m_complete_tasks.load());
+        if (runtime.m_active and runtime.completed()) {
+            bool expected = true;
+            debug_print("Thread %d finished, is_completed: %b, tasks: %d\n", thread_id, runtime.completed(), runtime.m_complete_tasks.load());
+
+            if (not runtime.m_active.compare_exchange_strong(expected, false)) return;
+            if (not spinning) {
+                // ensure that all threads have finished before going to sleep
+                // notify
+                context->notify();
+            }
+        }
     }
 }
 
@@ -125,6 +137,7 @@ class TaskSystemParallelThreadPoolSpinning: public ITaskSystem {
         TaskID runAsyncWithDeps(IRunnable* runnable, int num_total_tasks,
                                 const std::vector<TaskID>& deps);
         void sync();
+        void notify() {}
 
     public:
         Runtime m_runtime;
@@ -147,10 +160,13 @@ class TaskSystemParallelThreadPoolSleeping: public ITaskSystem {
         TaskID runAsyncWithDeps(IRunnable* runnable, int num_total_tasks,
                                 const std::vector<TaskID>& deps);
         void sync();
+        void notify() { m_threads_done.notify_one(); }
 
         Runtime m_runtime;
         std::vector<std::thread> m_threads;
         std::atomic<bool> m_done{false};
+        std::condition_variable m_threads_done;
+        std::mutex m_threads_mutex;
 };
 
 #endif

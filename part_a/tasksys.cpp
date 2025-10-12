@@ -1,10 +1,14 @@
 #include "tasksys.h"
+#include <iostream>
+#include <cassert>
+#include <atomic>
 
 
 IRunnable::~IRunnable() {}
 
-ITaskSystem::ITaskSystem(int num_threads) {}
+ITaskSystem::ITaskSystem(int num_threads): m_num_threads(num_threads) {}
 ITaskSystem::~ITaskSystem() {}
+int ITaskSystem::num_threads() { return m_num_threads; }
 
 /*
  * ================================================================
@@ -57,7 +61,8 @@ TaskSystemParallelSpawn::TaskSystemParallelSpawn(int num_threads): ITaskSystem(n
     //
 }
 
-TaskSystemParallelSpawn::~TaskSystemParallelSpawn() {}
+TaskSystemParallelSpawn::~TaskSystemParallelSpawn() 
+{}
 
 void TaskSystemParallelSpawn::run(IRunnable* runnable, int num_total_tasks) {
 
@@ -68,9 +73,25 @@ void TaskSystemParallelSpawn::run(IRunnable* runnable, int num_total_tasks) {
     // tasks sequentially on the calling thread.
     //
 
-    for (int i = 0; i < num_total_tasks; i++) {
-        runnable->runTask(i, num_total_tasks);
+    int n = num_threads();
+    std::atomic<int> next_task{0};
+    auto run_task = [runnable, num_total_tasks, &next_task]() {
+        while (true) {
+            int task_id = next_task.fetch_add(1);
+            if (task_id >= num_total_tasks) {
+                break;
+            }
+            runnable->runTask(task_id, num_total_tasks);
+        }
+    };
+
+    std::vector<std::thread> threads;
+    for (int i = 0; i < n; i++)
+    {
+        threads.emplace_back(run_task);
     }
+
+    for (auto &t: threads) t.join();
 }
 
 TaskID TaskSystemParallelSpawn::runAsyncWithDeps(IRunnable* runnable, int num_total_tasks,
@@ -101,12 +122,57 @@ TaskSystemParallelThreadPoolSpinning::TaskSystemParallelThreadPoolSpinning(int n
     // Implementations are free to add new class member variables
     // (requiring changes to tasksys.h).
     //
+
+    auto thread_run = [this, num_threads](int thread_id){
+        auto& runtime = this->m_runtime;
+
+        while (not this->m_done) {
+            bool marked = false;
+            while (not runtime.started());
+            while (runtime.has_more_tasks())
+            {
+                int process_id = runtime.next_id();
+                if(process_id >= runtime.m_total_tasks)
+                {
+                    // some other threads has it
+                    break;
+                }
+
+                runtime.run(process_id);
+
+                if (process_id + 1 == runtime.m_total_tasks) {
+                    break;
+                }
+            }
+
+            while (not runtime.finished())
+            {
+                if (not marked) {
+                    runtime.mark_finished();
+                    marked = true;
+                    std::cout << "runtime finished: " << runtime.m_finished << std::endl;
+                }
+            }
+            runtime.m_total_tasks = 0;
+
+            while (not this->m_done && not runtime.started());
+        }
+    };
+    for (int i = 0; i < num_threads; i++) 
+    {
+        m_threads.emplace_back(thread_run, i);
+    }
 }
 
-TaskSystemParallelThreadPoolSpinning::~TaskSystemParallelThreadPoolSpinning() {}
+TaskSystemParallelThreadPoolSpinning::~TaskSystemParallelThreadPoolSpinning() {
+    m_done = true;
+    for (auto &t: m_threads)
+    {
+        t.join();
+    }
+}
 
 void TaskSystemParallelThreadPoolSpinning::run(IRunnable* runnable, int num_total_tasks) {
-
 
     //
     // TODO: CS149 students will modify the implementation of this
@@ -114,9 +180,9 @@ void TaskSystemParallelThreadPoolSpinning::run(IRunnable* runnable, int num_tota
     // tasks sequentially on the calling thread.
     //
 
-    for (int i = 0; i < num_total_tasks; i++) {
-        runnable->runTask(i, num_total_tasks);
-    }
+    m_runtime.add_job(runnable, num_total_tasks, num_threads());
+    while (not m_runtime.finished());
+    // m_runtime.reset();
 }
 
 TaskID TaskSystemParallelThreadPoolSpinning::runAsyncWithDeps(IRunnable* runnable, int num_total_tasks,

@@ -178,7 +178,7 @@ const char* TaskSystemParallelThreadPoolSleeping::name() {
     return "Parallel + Thread Pool + Sleep";
 }
 
-TaskSystemParallelThreadPoolSleeping::TaskSystemParallelThreadPoolSleeping(int num_threads): ITaskSystem(num_threads) {
+TaskSystemParallelThreadPoolSleeping::TaskSystemParallelThreadPoolSleeping(int num_threads): ITaskSystem(num_threads), m_max_threads(num_threads) {
     //
     // TODO: CS149 student implementations may decide to perform setup
     // operations (such as thread pool construction) here.
@@ -188,12 +188,20 @@ TaskSystemParallelThreadPoolSleeping::TaskSystemParallelThreadPoolSleeping(int n
 
     auto thread_run = [&](int thread_id) {
         while (not m_done) {
+	    if (thread_id > m_max_threads) {sched_yield(); continue;}
             while (not m_runtime.empty())
             {
+                auto start_time = std::chrono::high_resolution_clock::now();
                 auto job = m_runtime.pop();
                 if (job == -1) break;
                 m_runtime.run(job);
                 m_runtime.add_complete();
+                auto end_time = std::chrono::high_resolution_clock::now();
+                auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time).count();
+                if (duration <= 1) {
+                    m_max_threads = 2;
+                }
+                // std::cout << "Thread " << thread_id << " executed job in " << duration << " microseconds. Max threads: " << m_max_threads << std::endl;
             }
 
 

@@ -139,6 +139,7 @@ class TaskSystemParallelThreadPoolSleeping: public ITaskSystem {
         std::atomic<bool> m_done{false};
         std::mutex m_completed_mutex;
         std::condition_variable m_completed_cv;
+        int m_max_threads = 0;
 };
 
 #endif

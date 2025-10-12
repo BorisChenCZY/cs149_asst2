@@ -119,7 +119,7 @@ const char* TaskSystemParallelThreadPoolSpinning::name() {
 TaskSystemParallelThreadPoolSpinning::TaskSystemParallelThreadPoolSpinning(int num_threads): ITaskSystem(num_threads) {
     for (int i = 0; i < num_threads; i++) 
     {
-        m_threads.emplace_back(thread_executor<TaskSystemParallelThreadPoolSpinning, false>, i, this);
+        m_threads.emplace_back(thread_executor<TaskSystemParallelThreadPoolSpinning, true>, i, this);
     }
 }
 
@@ -176,7 +176,7 @@ TaskSystemParallelThreadPoolSleeping::TaskSystemParallelThreadPoolSleeping(int n
 
     for (int i = 0; i < num_threads; i++) 
     {
-        m_threads.emplace_back(thread_executor<TaskSystemParallelThreadPoolSleeping, true>, i, this);
+        m_threads.emplace_back(thread_executor<TaskSystemParallelThreadPoolSleeping, false>, i, this);
     }
 }
 

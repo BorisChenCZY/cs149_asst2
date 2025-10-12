@@ -114,6 +114,47 @@ public:
     IRunnable* m_runnable;
 };
 
+template <typename Context, bool spinning = false>
+inline void thread_executor(int thread_id, Context* context) {
+    auto &m_done = context->m_done;
+    auto& runtime = context->m_runtime;
+
+    auto yield = [](){
+        if (not spinning) {
+            sched_yield();
+        }
+    };
+
+    while (true) {
+        // TODO REMOVE THIS YIELD for busy spinning
+        while (not m_done && not runtime.started()) yield();
+        if (m_done) {
+            debug_print("Thread %d exiting\n", thread_id);
+            break;
+        }
+
+        runtime.start_thread();
+        while (not runtime.is_all_thread_started()) yield();
+
+        debug_print("Thread %d started, total_tasks: %d\n", thread_id, runtime.m_total_tasks);
+        while (not runtime.completed())
+        {
+            int process_id = runtime.next_task();
+            if (process_id >= runtime.m_total_tasks) {
+                debug_print("Thread %d no more tasks, exiting\n", thread_id);
+                break;
+            }
+            runtime.run(process_id);
+            runtime.mark_complete();
+        }
+
+        debug_print("Thread %d finished, is_completed: %b, tasks: %d\n", thread_id, runtime.completed(), runtime.m_complete_tasks.load());
+        while (not runtime.completed()) yield();
+        runtime.reset();
+        runtime.wait_thread();
+    }
+}
+
 /*
  * TaskSystemParallelThreadPoolSpinning: This class is the student's
  * implementation of a parallel task execution engine that uses a
@@ -151,6 +192,10 @@ class TaskSystemParallelThreadPoolSleeping: public ITaskSystem {
         TaskID runAsyncWithDeps(IRunnable* runnable, int num_total_tasks,
                                 const std::vector<TaskID>& deps);
         void sync();
+
+        Runtime m_runtime;
+        std::vector<std::thread> m_threads;
+        std::atomic<bool> m_done{false};
 };
 
 #endif

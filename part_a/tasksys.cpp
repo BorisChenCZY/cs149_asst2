@@ -117,48 +117,9 @@ const char* TaskSystemParallelThreadPoolSpinning::name() {
 }
 
 TaskSystemParallelThreadPoolSpinning::TaskSystemParallelThreadPoolSpinning(int num_threads): ITaskSystem(num_threads) {
-    //
-    // TODO: CS149 student implementations may decide to perform setup
-    // operations (such as thread pool construction) here.
-    // Implementations are free to add new class member variables
-    // (requiring changes to tasksys.h).
-    //
-
-    auto thread_run = [this, num_threads](int thread_id){
-        auto& runtime = this->m_runtime;
-
-        while (true) {
-            // TODO REMOVE THIS YIELD for busy spinning
-            while (not this->m_done && not runtime.started()) pthread_yield();
-            if (this->m_done) {
-                debug_print("Thread %d exiting\n", thread_id);
-                break;
-            }
-
-            runtime.start_thread();
-            while (not runtime.is_all_thread_started()) pthread_yield();
-
-            debug_print("Thread %d started, total_tasks: %d\n", thread_id, runtime.m_total_tasks);
-            while (not runtime.completed())
-            {
-                int process_id = runtime.next_task();
-                if (process_id >= runtime.m_total_tasks) {
-                    debug_print("Thread %d no more tasks, exiting\n", thread_id);
-                    break;
-                }
-                runtime.run(process_id);
-                runtime.mark_complete();
-            }
-
-            debug_print("Thread %d finished, is_completed: %b, tasks: %d\n", thread_id, runtime.completed(), runtime.m_complete_tasks.load());
-            while (not runtime.completed());
-            runtime.reset();
-            runtime.wait_thread();
-        }
-    };
     for (int i = 0; i < num_threads; i++) 
     {
-        m_threads.emplace_back(thread_run, i);
+        m_threads.emplace_back(thread_executor<TaskSystemParallelThreadPoolSpinning, false>, i, this);
     }
 }
 
@@ -212,6 +173,11 @@ TaskSystemParallelThreadPoolSleeping::TaskSystemParallelThreadPoolSleeping(int n
     // Implementations are free to add new class member variables
     // (requiring changes to tasksys.h).
     //
+
+    for (int i = 0; i < num_threads; i++) 
+    {
+        m_threads.emplace_back(thread_executor<TaskSystemParallelThreadPoolSleeping, true>, i, this);
+    }
 }
 
 TaskSystemParallelThreadPoolSleeping::~TaskSystemParallelThreadPoolSleeping() {
@@ -221,6 +187,11 @@ TaskSystemParallelThreadPoolSleeping::~TaskSystemParallelThreadPoolSleeping() {
     // Implementations are free to add new class member variables
     // (requiring changes to tasksys.h).
     //
+    m_done = true;
+    for (auto &t: m_threads)
+    {
+        t.join();
+    }
 }
 
 void TaskSystemParallelThreadPoolSleeping::run(IRunnable* runnable, int num_total_tasks) {
@@ -232,9 +203,10 @@ void TaskSystemParallelThreadPoolSleeping::run(IRunnable* runnable, int num_tota
     // tasks sequentially on the calling thread.
     //
 
-    for (int i = 0; i < num_total_tasks; i++) {
-        runnable->runTask(i, num_total_tasks);
-    }
+    debug_print("Main thread adding job with %d tasks\n", num_total_tasks);
+    m_runtime.add_job(runnable, num_total_tasks, num_threads());
+    while (not m_runtime.is_all_thread_ready()) sched_yield();
+    debug_print("Main thread job finished\n");
 }
 
 TaskID TaskSystemParallelThreadPoolSleeping::runAsyncWithDeps(IRunnable* runnable, int num_total_tasks,

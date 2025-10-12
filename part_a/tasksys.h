@@ -51,19 +51,11 @@ class TaskSystemParallelSpawn: public ITaskSystem {
 
 class Runtime {
 public:
-    void add_job(IRunnable* runnable, int total_tasks, int num_threads) {
-        m_total_tasks = total_tasks;
-        m_next_tasks.store(0);
+    void add_job(IRunnable* runnable, int total_tasks, int total_threads) {
         m_complete_tasks.store(0);
+        m_next_tasks.store(0);
         m_runnable = runnable;
-        m_thread_wait.store(0);
-        m_thread_started.store(0);
-        m_num_threads = num_threads;
-        m_active.store(true);
-    }
-
-    void reset() {
-        m_active.store(false);
+        m_total_tasks = total_tasks;
     }
 
     void run(int i)
@@ -74,43 +66,20 @@ public:
     int next_task() {
         return m_next_tasks.fetch_add(1);
     }
-
-    bool started() {
-        return m_active.load();
-    }
     
     bool completed() {
-        int complete = m_complete_tasks.load();
-        return complete != 0 && complete >= m_total_tasks;
+        return m_complete_tasks >= m_total_tasks;
     }
 
     void mark_complete() {
         m_complete_tasks.fetch_add(1);
     }
 
-    void wait_thread() {
-        m_thread_wait.fetch_add(1);
-    }
-
-    bool is_all_thread_ready() {
-        return m_thread_wait.load() >= m_num_threads;
-    }
-
-    void start_thread() {
-        m_thread_started.fetch_add(1);
-    } 
-
-    bool is_all_thread_started() {
-        return m_thread_started.load() >= m_num_threads;
-    }   
-
     std::atomic<int> m_next_tasks{0};
     std::atomic<int> m_complete_tasks{0};
-    std::atomic<bool> m_active{false};
     std::atomic<int> m_thread_wait{0};
     std::atomic<int> m_thread_started{0};
     int m_total_tasks;
-    int m_num_threads;
     IRunnable* m_runnable;
 };
 
@@ -125,17 +94,7 @@ inline void thread_executor(int thread_id, Context* context) {
         }
     };
 
-    while (true) {
-        while (not m_done && not runtime.started()) yield();
-        if (m_done) {
-            debug_print("Thread %d exiting\n", thread_id);
-            break;
-        }
-
-        runtime.start_thread();
-        while (not runtime.is_all_thread_started()) yield();
-
-        debug_print("Thread %d started, total_tasks: %d\n", thread_id, runtime.m_total_tasks);
+    while (not m_done) {
         while (not runtime.completed())
         {
             int process_id = runtime.next_task();
@@ -148,9 +107,6 @@ inline void thread_executor(int thread_id, Context* context) {
         }
 
         debug_print("Thread %d finished, is_completed: %b, tasks: %d\n", thread_id, runtime.completed(), runtime.m_complete_tasks.load());
-        while (not runtime.completed()) yield();
-        runtime.reset();
-        runtime.wait_thread();
     }
 }
 

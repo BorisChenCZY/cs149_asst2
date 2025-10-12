@@ -140,8 +140,8 @@ void TaskSystemParallelThreadPoolSpinning::run(IRunnable* runnable, int num_tota
     //
 
     debug_print("Main thread adding job with %d tasks\n", num_total_tasks);
-    m_runtime.add_job(runnable, num_total_tasks, num_threads());
-    while (not m_runtime.is_all_thread_ready());
+    m_runtime.add_job(runnable, num_total_tasks);
+    while (not m_runtime.completed());
     debug_print("Main thread job finished\n");
 }
 
@@ -204,8 +204,8 @@ void TaskSystemParallelThreadPoolSleeping::run(IRunnable* runnable, int num_tota
     //
 
     debug_print("Main thread adding job with %d tasks\n", num_total_tasks);
-    m_runtime.add_job(runnable, num_total_tasks, num_threads());
-    while (not m_runtime.is_all_thread_ready()) sched_yield();
+    m_runtime.add_job(runnable, num_total_tasks);
+    while (not m_runtime.completed()) sched_yield();
     debug_print("Main thread job finished\n");
 }
 

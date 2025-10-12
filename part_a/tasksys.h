@@ -5,6 +5,16 @@
 #include <atomic>
 #include <thread>
 #include <iostream>
+#include <mutex>
+
+template <typename ...Args>
+inline void debug_print(const char* msg, Args... args) {
+    #ifdef DEBUG
+    static std::mutex print_mutex;
+    std::lock_guard<std::mutex> lock(print_mutex);
+    printf(msg, args...);
+    #endif
+}
 
 /*
  * TaskSystemSerial: This class is the student's implementation of a
@@ -42,17 +52,18 @@ class TaskSystemParallelSpawn: public ITaskSystem {
 class Runtime {
 public:
     void add_job(IRunnable* runnable, int total_tasks, int num_threads) {
-        m_finished.store(num_threads);
-        m_current_id.store(0);
+        m_total_tasks = total_tasks;
+        m_next_tasks.store(0);
+        m_complete_tasks.store(0);
         m_runnable = runnable;
-        m_total_tasks.store(total_tasks);
+        m_thread_wait.store(0);
+        m_thread_started.store(0);
+        m_num_threads = num_threads;
+        m_active.store(true);
     }
 
     void reset() {
-        m_current_id = 0;
-        m_total_tasks = 0;
-        m_finished = 1;
-        m_runnable = nullptr;
+        m_active.store(false);
     }
 
     void run(int i)
@@ -60,29 +71,46 @@ public:
         m_runnable->runTask(i, m_total_tasks);
     }
 
-    int next_id() {
-        return m_current_id.fetch_add(1);
+    int next_task() {
+        return m_next_tasks.fetch_add(1);
     }
 
     bool started() {
-        return m_total_tasks != 0;
+        return m_active.load();
     }
     
-    bool has_more_tasks() {
-        return !finished() && m_current_id < m_total_tasks;
+    bool completed() {
+        int complete = m_complete_tasks.load();
+        return complete != 0 && complete >= m_total_tasks;
     }
 
-    void mark_finished() {
-        m_finished--;
+    void mark_complete() {
+        m_complete_tasks.fetch_add(1);
     }
 
-    bool finished() {
-        return m_finished == 0;
+    void wait_thread() {
+        m_thread_wait.fetch_add(1);
     }
 
-    std::atomic<int> m_current_id{0};
-    std::atomic<int> m_total_tasks{0};
-    std::atomic<int> m_finished{false};
+    bool is_all_thread_ready() {
+        return m_thread_wait.load() >= m_num_threads;
+    }
+
+    void start_thread() {
+        m_thread_started.fetch_add(1);
+    } 
+
+    bool is_all_thread_started() {
+        return m_thread_started.load() >= m_num_threads;
+    }   
+
+    std::atomic<int> m_next_tasks{0};
+    std::atomic<int> m_complete_tasks{0};
+    std::atomic<bool> m_active{false};
+    std::atomic<int> m_thread_wait{0};
+    std::atomic<int> m_thread_started{0};
+    int m_total_tasks;
+    int m_num_threads;
     IRunnable* m_runnable;
 };
 

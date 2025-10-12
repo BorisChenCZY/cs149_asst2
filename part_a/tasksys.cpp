@@ -2,6 +2,7 @@
 #include <iostream>
 #include <cassert>
 #include <atomic>
+#include <unistd.h>
 
 
 IRunnable::~IRunnable() {}
@@ -126,36 +127,33 @@ TaskSystemParallelThreadPoolSpinning::TaskSystemParallelThreadPoolSpinning(int n
     auto thread_run = [this, num_threads](int thread_id){
         auto& runtime = this->m_runtime;
 
-        while (not this->m_done) {
-            bool marked = false;
-            while (not runtime.started());
-            while (runtime.has_more_tasks())
+        while (true) {
+            // TODO REMOVE THIS YIELD for busy spinning
+            while (not this->m_done && not runtime.started()) pthread_yield();
+            if (this->m_done) {
+                debug_print("Thread %d exiting\n", thread_id);
+                break;
+            }
+
+            runtime.start_thread();
+            while (not runtime.is_all_thread_started()) pthread_yield();
+
+            debug_print("Thread %d started, total_tasks: %d\n", thread_id, runtime.m_total_tasks);
+            while (not runtime.completed())
             {
-                int process_id = runtime.next_id();
-                if(process_id >= runtime.m_total_tasks)
-                {
-                    // some other threads has it
+                int process_id = runtime.next_task();
+                if (process_id >= runtime.m_total_tasks) {
+                    debug_print("Thread %d no more tasks, exiting\n", thread_id);
                     break;
                 }
-
                 runtime.run(process_id);
-
-                if (process_id + 1 == runtime.m_total_tasks) {
-                    break;
-                }
+                runtime.mark_complete();
             }
 
-            while (not runtime.finished())
-            {
-                if (not marked) {
-                    runtime.mark_finished();
-                    marked = true;
-                    std::cout << "runtime finished: " << runtime.m_finished << std::endl;
-                }
-            }
-            runtime.m_total_tasks = 0;
-
-            while (not this->m_done && not runtime.started());
+            debug_print("Thread %d finished, is_completed: %b, tasks: %d\n", thread_id, runtime.completed(), runtime.m_complete_tasks.load());
+            while (not runtime.completed());
+            runtime.reset();
+            runtime.wait_thread();
         }
     };
     for (int i = 0; i < num_threads; i++) 
@@ -180,9 +178,10 @@ void TaskSystemParallelThreadPoolSpinning::run(IRunnable* runnable, int num_tota
     // tasks sequentially on the calling thread.
     //
 
+    debug_print("Main thread adding job with %d tasks\n", num_total_tasks);
     m_runtime.add_job(runnable, num_total_tasks, num_threads());
-    while (not m_runtime.finished());
-    // m_runtime.reset();
+    while (not m_runtime.is_all_thread_ready());
+    debug_print("Main thread job finished\n");
 }
 
 TaskID TaskSystemParallelThreadPoolSpinning::runAsyncWithDeps(IRunnable* runnable, int num_total_tasks,

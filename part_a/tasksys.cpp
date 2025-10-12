@@ -117,9 +117,21 @@ const char* TaskSystemParallelThreadPoolSpinning::name() {
 }
 
 TaskSystemParallelThreadPoolSpinning::TaskSystemParallelThreadPoolSpinning(int num_threads): ITaskSystem(num_threads) {
+    auto thread_run = [&](int thread_id) {
+        while (not m_done) {
+            while (not m_runtime.empty())
+            {
+                auto job = m_runtime.pop();
+                if (job == -1) break;
+                m_runtime.run(job);
+                m_runtime.add_complete();
+            }
+        }
+    };
+
     for (int i = 0; i < num_threads; i++) 
     {
-        m_threads.emplace_back(thread_executor<TaskSystemParallelThreadPoolSpinning, true>, i, this);
+        m_threads.emplace_back(thread_run, i);
     }
 }
 
@@ -140,8 +152,8 @@ void TaskSystemParallelThreadPoolSpinning::run(IRunnable* runnable, int num_tota
     //
 
     debug_print("Main thread adding job with %d tasks\n", num_total_tasks);
-    m_runtime.add_job(runnable, num_total_tasks, num_threads());
-    while (not m_runtime.is_all_thread_ready());
+    m_runtime.add_job(runnable, num_total_tasks);
+    while (not m_runtime.is_all_complete());
     debug_print("Main thread job finished\n");
 }
 
@@ -174,9 +186,29 @@ TaskSystemParallelThreadPoolSleeping::TaskSystemParallelThreadPoolSleeping(int n
     // (requiring changes to tasksys.h).
     //
 
+    auto thread_run = [&](int thread_id) {
+        while (not m_done) {
+            while (not m_runtime.empty())
+            {
+                auto job = m_runtime.pop();
+                if (job == -1) break;
+                m_runtime.run(job);
+                m_runtime.add_complete();
+            }
+
+
+            // notify completed
+            {
+                if (m_runtime.is_all_complete()) {
+                    m_completed_cv.notify_all();
+                }
+            }
+        }
+    };
+
     for (int i = 0; i < num_threads; i++) 
     {
-        m_threads.emplace_back(thread_executor<TaskSystemParallelThreadPoolSleeping, false>, i, this);
+        m_threads.emplace_back(thread_run, i);
     }
 }
 
@@ -204,8 +236,13 @@ void TaskSystemParallelThreadPoolSleeping::run(IRunnable* runnable, int num_tota
     //
 
     debug_print("Main thread adding job with %d tasks\n", num_total_tasks);
-    m_runtime.add_job(runnable, num_total_tasks, num_threads());
-    while (not m_runtime.is_all_thread_ready()) sched_yield();
+    m_runtime.add_job(runnable, num_total_tasks);
+    
+    {
+        std::unique_lock<std::mutex> lock(m_completed_mutex);
+        m_completed_cv.wait(lock, [&]{ return m_runtime.is_all_complete(); });
+    }
+
     debug_print("Main thread job finished\n");
 }
 

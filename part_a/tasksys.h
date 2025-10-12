@@ -6,6 +6,8 @@
 #include <thread>
 #include <iostream>
 #include <mutex>
+#include <queue>
+#include <condition_variable>
 
 template <typename ...Args>
 inline void debug_print(const char* msg, Args... args) {
@@ -51,19 +53,14 @@ class TaskSystemParallelSpawn: public ITaskSystem {
 
 class Runtime {
 public:
-    void add_job(IRunnable* runnable, int total_tasks, int num_threads) {
+    void add_job(IRunnable* runnable, int total_tasks) {
+        std::lock_guard<std::mutex> lock(m_queue_mutex);
+        m_complete_tasks = 0;
+        for (int i = 0; i < total_tasks; i++) {
+            m_jobs.push(i);
+        }
         m_total_tasks = total_tasks;
-        m_next_tasks.store(0);
-        m_complete_tasks.store(0);
         m_runnable = runnable;
-        m_thread_wait.store(0);
-        m_thread_started.store(0);
-        m_num_threads = num_threads;
-        m_active.store(true);
-    }
-
-    void reset() {
-        m_active.store(false);
     }
 
     void run(int i)
@@ -71,88 +68,33 @@ public:
         m_runnable->runTask(i, m_total_tasks);
     }
 
-    int next_task() {
-        return m_next_tasks.fetch_add(1);
+    bool empty() {
+        std::lock_guard<std::mutex> lock(m_queue_mutex);
+        return m_jobs.empty();
     }
 
-    bool started() {
-        return m_active.load();
-    }
-    
-    bool completed() {
-        int complete = m_complete_tasks.load();
-        return complete != 0 && complete >= m_total_tasks;
-    }
-
-    void mark_complete() {
-        m_complete_tasks.fetch_add(1);
+    int pop() {
+        std::lock_guard<std::mutex> lock(m_queue_mutex);
+        if (m_jobs.empty()) return -1;
+        int job = m_jobs.front();
+        m_jobs.pop();
+        return job;
     }
 
-    void wait_thread() {
-        m_thread_wait.fetch_add(1);
+    void add_complete() {
+        m_complete_tasks++;
     }
 
-    bool is_all_thread_ready() {
-        return m_thread_wait.load() >= m_num_threads;
+    bool is_all_complete() {
+        return m_complete_tasks.load() >= m_total_tasks;
     }
 
-    void start_thread() {
-        m_thread_started.fetch_add(1);
-    } 
-
-    bool is_all_thread_started() {
-        return m_thread_started.load() >= m_num_threads;
-    }   
-
-    std::atomic<int> m_next_tasks{0};
-    std::atomic<int> m_complete_tasks{0};
-    std::atomic<bool> m_active{false};
-    std::atomic<int> m_thread_wait{0};
-    std::atomic<int> m_thread_started{0};
+    std::mutex m_queue_mutex;
+    std::queue<int> m_jobs;
     int m_total_tasks;
-    int m_num_threads;
+    std::atomic<int> m_complete_tasks{0};
     IRunnable* m_runnable;
 };
-
-template <typename Context, bool spinning = false>
-inline void thread_executor(int thread_id, Context* context) {
-    auto &m_done = context->m_done;
-    auto& runtime = context->m_runtime;
-
-    auto yield = [](){
-        if (not spinning) {
-            sched_yield();
-        }
-    };
-
-    while (true) {
-        while (not m_done && not runtime.started()) yield();
-        if (m_done) {
-            debug_print("Thread %d exiting\n", thread_id);
-            break;
-        }
-
-        runtime.start_thread();
-        while (not runtime.is_all_thread_started()) yield();
-
-        debug_print("Thread %d started, total_tasks: %d\n", thread_id, runtime.m_total_tasks);
-        while (not runtime.completed())
-        {
-            int process_id = runtime.next_task();
-            if (process_id >= runtime.m_total_tasks) {
-                debug_print("Thread %d no more tasks, exiting\n", thread_id);
-                break;
-            }
-            runtime.run(process_id);
-            runtime.mark_complete();
-        }
-
-        debug_print("Thread %d finished, is_completed: %b, tasks: %d\n", thread_id, runtime.completed(), runtime.m_complete_tasks.load());
-        while (not runtime.completed()) yield();
-        runtime.reset();
-        runtime.wait_thread();
-    }
-}
 
 /*
  * TaskSystemParallelThreadPoolSpinning: This class is the student's
@@ -195,6 +137,8 @@ class TaskSystemParallelThreadPoolSleeping: public ITaskSystem {
         Runtime m_runtime;
         std::vector<std::thread> m_threads;
         std::atomic<bool> m_done{false};
+        std::mutex m_completed_mutex;
+        std::condition_variable m_completed_cv;
 };
 
 #endif

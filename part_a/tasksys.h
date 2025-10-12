@@ -53,6 +53,7 @@ class TaskSystemParallelSpawn: public ITaskSystem {
 class Runtime {
 public:
     void add_job(IRunnable* runnable, int total_tasks) {
+        m_version.fetch_add(1);
         m_runnable = runnable;
         m_next_tasks.store(0);
 
@@ -83,9 +84,8 @@ public:
 
     std::atomic<int> m_next_tasks{0};
     std::atomic<int> m_complete_tasks{0};
-    std::atomic<int> m_thread_wait{0};
-    std::atomic<int> m_thread_started{0};
     std::atomic<bool> m_active{false};
+    std::atomic<int> m_version{0};
     volatile int m_total_tasks;
     IRunnable* m_runnable;
 };
@@ -96,6 +96,7 @@ inline void thread_executor(int thread_id, Context* context) {
     auto &runtime = context->m_runtime;
 
     while (not m_done) {
+        auto version = runtime.m_version.load();
         while (not runtime.completed() and runtime.m_active)
         {
             int process_id = runtime.next_task();
@@ -105,20 +106,21 @@ inline void thread_executor(int thread_id, Context* context) {
                 break;
             }
             runtime.run(process_id);
+            version = runtime.m_version.load();
             runtime.mark_complete();
         }
 
-        if (runtime.m_active and runtime.completed()) {
-            bool expected = true;
-            debug_print("Thread %d finished, is_completed: %b, tasks: %d\n", thread_id, runtime.completed(), runtime.m_complete_tasks.load());
+        // if (runtime.m_active and runtime.completed()) {
+        //     bool expected = true;
+        //     debug_print("Thread %d finished, is_completed: %b, tasks: %d\n", thread_id, runtime.completed(), runtime.m_complete_tasks.load());
 
-            if (not runtime.m_active.compare_exchange_strong(expected, false)) return;
-            if (not spinning) {
-                // ensure that all threads have finished before going to sleep
-                // notify
-                context->notify();
-            }
-        }
+        //     if (not runtime.m_active.compare_exchange_strong(expected, false)) return;
+        //     if (not spinning) {
+        //         // ensure that all threads have finished before going to sleep
+        //         // notify
+        //         context->notify();
+        //     }
+        // }
     }
 }
 

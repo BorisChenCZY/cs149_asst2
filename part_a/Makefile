@@ -7,8 +7,8 @@ else
 endif
 
 
-# TODO RECOVER
 CXXFLAGS=-I. -I../common -I../tests -Iobjs/ -O3 -std=c++11 -Wall
+# DEBUG BUILD ARGS
 # CXXFLAGS=-I. -I../common -I../tests -Iobjs/ -Og -g -std=c++11 -Wall -DDEBUG 
 
 APP_NAME=runtasks

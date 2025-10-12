@@ -126,7 +126,6 @@ inline void thread_executor(int thread_id, Context* context) {
     };
 
     while (true) {
-        // TODO REMOVE THIS YIELD for busy spinning
         while (not m_done && not runtime.started()) yield();
         if (m_done) {
             debug_print("Thread %d exiting\n", thread_id);

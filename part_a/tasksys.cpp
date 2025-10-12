@@ -198,6 +198,7 @@ TaskSystemParallelThreadPoolSleeping::TaskSystemParallelThreadPoolSleeping(int n
                 m_runtime.add_complete();
                 auto end_time = std::chrono::high_resolution_clock::now();
                 auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time).count();
+                // if the task is too lightweight, it is not making sense to have so many threads
                 if (duration <= 1) {
                     m_max_threads = 2;
                 }

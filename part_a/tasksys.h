@@ -53,7 +53,6 @@ class TaskSystemParallelSpawn: public ITaskSystem {
 class Runtime {
 public:
     void add_job(IRunnable* runnable, int total_tasks) {
-        m_version.fetch_add(1);
         m_runnable = runnable;
         m_next_tasks.store(0);
 
@@ -70,22 +69,22 @@ public:
     }
 
     int next_task() {
-        return m_next_tasks.fetch_add(1);
+        return m_next_tasks.fetch_add(1, std::memory_order_relaxed);
     }
     
     bool completed() {
         auto complete = m_complete_tasks.load();
-        return complete != 0 and complete >= m_total_tasks;
+        // return complete != 0 and complete >= m_total_tasks;
+        return complete >= m_total_tasks;
     }
 
     void mark_complete() {
-        m_complete_tasks.fetch_add(1);
+        m_complete_tasks.fetch_add(1, std::memory_order_relaxed);
     }
 
-    std::atomic<int> m_next_tasks{0};
-    std::atomic<int> m_complete_tasks{0};
-    std::atomic<bool> m_active{false};
-    std::atomic<int> m_version{0};
+    alignas(64) std::atomic<int> m_next_tasks{0} ;
+    alignas(64) std::atomic<int> m_complete_tasks{0};
+    alignas(64) std::atomic<bool> m_active{false} ;
     volatile int m_total_tasks;
     IRunnable* m_runnable;
 };
@@ -96,7 +95,6 @@ inline void thread_executor(int thread_id, Context* context) {
     auto &runtime = context->m_runtime;
 
     while (not m_done) {
-        auto version = runtime.m_version.load();
         while (not runtime.completed() and runtime.m_active)
         {
             int process_id = runtime.next_task();
@@ -106,8 +104,12 @@ inline void thread_executor(int thread_id, Context* context) {
                 break;
             }
             runtime.run(process_id);
-            version = runtime.m_version.load();
             runtime.mark_complete();
+        }
+
+        if (not spinning and runtime.completed())
+        {
+            context->notify();
         }
 
         // if (runtime.m_active and runtime.completed()) {
@@ -139,7 +141,7 @@ class TaskSystemParallelThreadPoolSpinning: public ITaskSystem {
         TaskID runAsyncWithDeps(IRunnable* runnable, int num_total_tasks,
                                 const std::vector<TaskID>& deps);
         void sync();
-        void notify() {}
+        void notify() { }
 
     public:
         Runtime m_runtime;

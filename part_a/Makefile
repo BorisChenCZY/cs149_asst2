@@ -7,7 +7,7 @@ else
 endif
 
 
-CXXFLAGS=-I. -I../common -I../tests -Iobjs/ -O3 -std=c++11 -Wall
+CXXFLAGS=-I. -I../common -I../tests -Iobjs/ -O3 -std=c++11 -Wall -g
 # DEBUG BUILD ARGS
 # CXXFLAGS=-I. -I../common -I../tests -Iobjs/ -Og -g -std=c++11 -Wall -DDEBUG 
 

@@ -181,7 +181,6 @@ void TaskSystemParallelThreadPoolSleeping::run(IRunnable* runnable, int num_tota
 TaskID TaskSystemParallelThreadPoolSleeping::runAsyncWithDeps(IRunnable* runnable, int num_total_tasks,
                                                     const std::vector<TaskID>& deps) {
 
-
     //
     // TODO: CS149 students will implement this method in Part B.
     //
@@ -196,17 +195,7 @@ TaskID TaskSystemParallelThreadPoolSleeping::runAsyncWithDeps(IRunnable* runnabl
     launch->num_total_tasks = num_total_tasks;
     launch->dependencies = deps;
     
-    // Create individual tasks
-    for (int i = 0; i < num_total_tasks; i++) {
-        Task task;
-        task.runnable = runnable;
-        task.task_id = i;
-        task.num_total_tasks = num_total_tasks;
-        task.launch_id = launch_id;
-        launch->tasks.push_back(task);
-    }
-    
-    // Store the launch
+    // Store the launch first
     {
         std::lock_guard<std::mutex> lock(m_task_mutex);
         m_task_launches[launch_id] = launch;
@@ -215,7 +204,12 @@ TaskID TaskSystemParallelThreadPoolSleeping::runAsyncWithDeps(IRunnable* runnabl
         // Check if dependencies are satisfied
         if (are_dependencies_satisfied(deps)) {
             // All dependencies satisfied, add tasks to ready queue
-            for (const auto& task : launch->tasks) {
+            for (int i = 0; i < num_total_tasks; i++) {
+                Task task;
+                task.runnable = runnable;
+                task.task_id = i;
+                task.num_total_tasks = num_total_tasks;
+                task.launch_id = launch_id;
                 m_ready_queue.push(task);
             }
             m_task_cv.notify_all();
@@ -263,7 +257,12 @@ void TaskSystemParallelThreadPoolSleeping::move_ready_tasks_to_queue(TaskID comp
                 // Check if all dependencies are now satisfied
                 if (are_dependencies_satisfied(launch->dependencies)) {
                     // Add all tasks from this launch to ready queue
-                    for (const auto& task : launch->tasks) {
+                    for (int i = 0; i < launch->num_total_tasks; i++) {
+                        Task task;
+                        task.runnable = launch->runnable;
+                        task.task_id = i;
+                        task.num_total_tasks = launch->num_total_tasks;
+                        task.launch_id = dependent_id;
                         m_ready_queue.push(task);
                     }
                 }
@@ -282,7 +281,7 @@ void TaskSystemParallelThreadPoolSleeping::worker_thread_function() {
         Task task;
         bool has_task = false;
         
-        // Try to get a task from ready queue
+        // Get task with minimal lock time
         {
             std::unique_lock<std::mutex> lock(m_task_mutex);
             m_task_cv.wait(lock, [this] { return m_done || !m_ready_queue.empty(); });
@@ -295,10 +294,11 @@ void TaskSystemParallelThreadPoolSleeping::worker_thread_function() {
         }
         
         if (has_task) {
-            // Execute the task
+            // Execute task outside of lock
             task.runnable->runTask(task.task_id, task.num_total_tasks);
             
-            // Update completion status
+            // Minimal lock time for completion tracking
+            bool should_notify_sync = false;
             {
                 std::lock_guard<std::mutex> lock(m_task_mutex);
                 auto launch_it = m_task_launches.find(task.launch_id);
@@ -306,22 +306,19 @@ void TaskSystemParallelThreadPoolSleeping::worker_thread_function() {
                     auto launch = launch_it->second;
                     int completed = launch->completed_tasks.fetch_add(1) + 1;
                     
-                    // Check if this launch is now complete
                     if (completed == launch->num_total_tasks) {
                         launch->is_complete.store(true);
-                        
-                        // Move dependent tasks to ready queue
                         move_ready_tasks_to_queue(task.launch_id);
                         
-                        // Decrease pending launches count
                         int pending = m_pending_launches.fetch_sub(1) - 1;
-                        
-                        // Notify sync() if all launches are complete
-                        if (pending == 0) {
-                            m_completed_cv.notify_all();
-                        }
+                        should_notify_sync = (pending == 0);
                     }
                 }
+            }
+            
+            // Notify outside of lock
+            if (should_notify_sync) {
+                m_completed_cv.notify_all();
             }
         }
     }

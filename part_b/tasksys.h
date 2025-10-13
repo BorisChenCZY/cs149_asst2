@@ -53,7 +53,6 @@ struct TaskLaunch {
     std::vector<TaskID> dependencies;
     std::atomic<int> completed_tasks{0};
     std::atomic<bool> is_complete{false};
-    std::vector<Task> tasks;  // Individual tasks in this launch
 };
 
 class Runtime {
@@ -163,12 +162,12 @@ class TaskSystemParallelThreadPoolSleeping: public ITaskSystem {
         // Part B members for async task execution and dependencies
         std::atomic<TaskID> m_next_task_id{1};  // Start from 1, 0 reserved for invalid
         
-        // Task management
+        // Simplified task management
         std::mutex m_task_mutex;
         std::queue<Task> m_ready_queue;  // Tasks ready to execute
         std::condition_variable m_task_cv;  // Signal when tasks are available
         
-        // Dependency tracking
+        // Simplified dependency tracking
         std::unordered_map<TaskID, std::shared_ptr<TaskLaunch>> m_task_launches;
         std::unordered_map<TaskID, std::unordered_set<TaskID>> m_dependents;  // Which launches depend on this one
         

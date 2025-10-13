@@ -53,6 +53,7 @@ class TaskSystemParallelSpawn: public ITaskSystem {
 class Runtime {
 public:
     void add_job(IRunnable* runnable, int total_tasks) {
+        // std::unique_lock<std::mutex> lock(m_complete_mutex);
         m_runnable = runnable;
         m_next_tasks = 0;
 
@@ -77,7 +78,7 @@ public:
     }
 
     void mark_complete() {
-        std::unique_lock<std::mutex> lock(m_complete_mutex);
+        // std::unique_lock<std::mutex> lock(m_complete_mutex);
         m_complete_tasks++;
     }
 
@@ -109,7 +110,7 @@ public:
     std::mutex m_complete_mutex;
     std::condition_variable m_complete_cv;
     std::condition_variable m_next_cv;
-    alignas(64) int m_complete_tasks{0};
+    alignas(64) std::atomic<int> m_complete_tasks{0};
     alignas(64) std::atomic<int> m_next_tasks{0} ;
     alignas(64) std::atomic<bool> m_active{false};
 };
@@ -138,7 +139,6 @@ inline void thread_executor(int thread_id, Context* context) {
         }
 
         if (not spinning) {
-		/*
             {
                 std::unique_lock<std::mutex> lk(runtime.m_complete_mutex);
                 runtime.m_next_cv.wait(lk, [&](){
@@ -146,8 +146,7 @@ inline void thread_executor(int thread_id, Context* context) {
                 });
             }
             runtime.notify_next();
-	    */
-	    std::this_thread::yield();
+	    // std::this_thread::yield();
         }
         else
         {

@@ -72,13 +72,13 @@ public:
     }
     
     bool completed() {
-        // std::unique_lock<std::mutex> lock(m_complete_mutex);
+        std::unique_lock<std::mutex> lock(m_complete_mutex);
         return completed_no_lock();
     }
 
     void mark_complete() {
-        // std::unique_lock<std::mutex> lock(m_complete_mutex);
-        m_complete_tasks.fetch_add(1, std::memory_order::memory_order_release);
+        std::unique_lock<std::mutex> lock(m_complete_mutex);
+        m_complete_tasks++;
     }
 
     void notify_complete() {
@@ -109,8 +109,8 @@ public:
     std::mutex m_complete_mutex;
     std::condition_variable m_complete_cv;
     std::condition_variable m_next_cv;
+    alignas(64) int m_complete_tasks{0};
     alignas(64) std::atomic<int> m_next_tasks{0} ;
-    alignas(64) std::atomic<int> m_complete_tasks{0};
     alignas(64) std::atomic<bool> m_active{false};
 };
 
@@ -151,7 +151,7 @@ inline void thread_executor(int thread_id, Context* context) {
         }
         else
         {
-            std::this_thread::yield();
+            // std::this_thread::yield();
         }
     }
 }

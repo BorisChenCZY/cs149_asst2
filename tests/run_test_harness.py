@@ -3,6 +3,7 @@ import platform
 import re
 import subprocess
 import multiprocessing
+from tqdm import tqdm
 
 STUDENT_BINARY_NAME = "runtasks"
 
@@ -157,7 +158,7 @@ if __name__ == '__main__':
     impl_perf_ok = {impl: True for impl in LIST_OF_IMPLEMENTATIONS}
 
     # run all tests
-    for (test_name, num_threads) in test_names_and_num_threads:
+    for (test_name, num_threads) in tqdm(test_names_and_num_threads):
         
         print("==============================================================="
               "=================")

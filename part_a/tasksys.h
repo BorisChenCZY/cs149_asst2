@@ -53,16 +53,13 @@ class TaskSystemParallelSpawn: public ITaskSystem {
 class Runtime {
 public:
     void add_job(IRunnable* runnable, int total_tasks) {
-        // std::lock_guard<std::mutex> lock();
-        std::unique_lock<std::mutex> lock(m_complete_mutex);
-        std::unique_lock<std::mutex> lock2(m_next_mutex);
         m_runnable = runnable;
         m_next_tasks = 0;
 
         m_complete_tasks= 0;
         m_total_tasks = total_tasks;
 
-        m_active.store(true, std::memory_order_release);
+        m_active.store(true, std::memory_order::memory_order_release);
     }
 
     void run(int i)
@@ -71,40 +68,50 @@ public:
     }
 
     int next_task() {
-        std::lock_guard<std::mutex> lock(m_next_mutex);
         return m_next_tasks++;
     }
     
     bool completed() {
-        std::lock_guard<std::mutex> lock(m_complete_mutex);
-        auto complete = m_complete_tasks;
-        // return complete != 0 and complete >= m_total_tasks;
-        return complete >= m_total_tasks;
+        // std::unique_lock<std::mutex> lock(m_complete_mutex);
+        return completed_no_lock();
     }
 
     void mark_complete() {
-        // m_complete_tasks.fetch_add(1, std::memory_order_release);
-        std::lock_guard<std::mutex> lock(m_complete_mutex);
-        m_complete_tasks++;
+        // std::unique_lock<std::mutex> lock(m_complete_mutex);
+        m_complete_tasks.fetch_add(1, std::memory_order::memory_order_release);
     }
 
     void notify_complete() {
-        m_complete_cv.notify_all();
+        m_complete_cv.notify_one();
+    }
+
+    void notify_next() {
+        m_next_cv.notify_one();
+    }
+
+    void notify_next_all() {
+        m_next_cv.notify_all();
     }
 
     void wait_complete() {
         std::unique_lock<std::mutex> lock(m_complete_mutex);
-        m_complete_cv.wait(lock, [this]{ return completed(); });
+        m_complete_cv.wait(lock, [this]{ return completed_no_lock(); });
     }
 
-    int m_next_tasks{0} ;
-    int m_complete_tasks{0};
-    alignas(64) std::atomic<bool> m_active{false};
+    bool completed_no_lock() const {
+        return m_complete_tasks >= m_total_tasks;
+    }
+
+public:
+
     volatile int m_total_tasks{0};
     IRunnable* m_runnable;
     std::mutex m_complete_mutex;
     std::condition_variable m_complete_cv;
-    std::mutex m_next_mutex;
+    std::condition_variable m_next_cv;
+    alignas(64) std::atomic<int> m_next_tasks{0} ;
+    alignas(64) std::atomic<int> m_complete_tasks{0};
+    alignas(64) std::atomic<bool> m_active{false};
 };
 
 template <typename Context, bool spinning = false>
@@ -128,6 +135,23 @@ inline void thread_executor(int thread_id, Context* context) {
         if (not spinning and runtime.completed())
         {
             context->notify();
+        }
+
+        if (not spinning) {
+		/*
+            {
+                std::unique_lock<std::mutex> lk(runtime.m_complete_mutex);
+                runtime.m_next_cv.wait(lk, [&](){
+                    return m_done || (runtime.m_active.load() and not runtime.completed_no_lock());
+                });
+            }
+            runtime.notify_next();
+	    */
+	    std::this_thread::yield();
+        }
+        else
+        {
+            std::this_thread::yield();
         }
     }
 }

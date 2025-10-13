@@ -141,7 +141,7 @@ void TaskSystemParallelThreadPoolSpinning::run(IRunnable* runnable, int num_tota
 
     debug_print("Main thread adding job with %d tasks\n", num_total_tasks);
     m_runtime.add_job(runnable, num_total_tasks);
-    while (not m_runtime.completed());
+    while (not m_runtime.completed()) std::this_thread::yield();
     m_runtime.m_active = false;
     debug_print("Main thread job finished\n");
 }
@@ -189,6 +189,7 @@ TaskSystemParallelThreadPoolSleeping::~TaskSystemParallelThreadPoolSleeping() {
     // (requiring changes to tasksys.h).
     //
     m_done = true;
+    m_runtime.notify_next_all();
     for (auto &t: m_threads)
     {
         t.join();
@@ -206,7 +207,9 @@ void TaskSystemParallelThreadPoolSleeping::run(IRunnable* runnable, int num_tota
 
     debug_print("Main thread adding job with %d tasks\n", num_total_tasks);
     m_runtime.add_job(runnable, num_total_tasks);
+    m_runtime.notify_next();
     m_runtime.wait_complete();
+    m_runtime.m_active = false;
     debug_print("Main thread job finished\n");
 }
 

@@ -88,12 +88,22 @@ public:
         m_complete_tasks++;
     }
 
+    void notify_complete() {
+        m_complete_cv.notify_all();
+    }
+
+    void wait_complete() {
+        std::unique_lock<std::mutex> lock(m_complete_mutex);
+        m_complete_cv.wait(lock, [this]{ return completed(); });
+    }
+
     int m_next_tasks{0} ;
     int m_complete_tasks{0};
     alignas(64) std::atomic<bool> m_active{false};
     volatile int m_total_tasks{0};
     IRunnable* m_runnable;
     std::mutex m_complete_mutex;
+    std::condition_variable m_complete_cv;
     std::mutex m_next_mutex;
 };
 
@@ -160,13 +170,11 @@ class TaskSystemParallelThreadPoolSleeping: public ITaskSystem {
         TaskID runAsyncWithDeps(IRunnable* runnable, int num_total_tasks,
                                 const std::vector<TaskID>& deps);
         void sync();
-        void notify() { m_threads_done.notify_one(); }
+        void notify() { m_runtime.notify_complete(); }
 
         Runtime m_runtime;
         std::vector<std::thread> m_threads;
         std::atomic<bool> m_done{false};
-        std::condition_variable m_threads_done;
-        std::mutex m_threads_mutex;
 };
 
 #endif

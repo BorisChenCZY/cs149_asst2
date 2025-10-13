@@ -59,8 +59,7 @@ public:
         m_complete_tasks.store(0);
         m_total_tasks = total_tasks;
 
-        std::atomic_thread_fence(std::memory_order_release);
-        m_active.store(true);
+        m_active.store(true, std::memory_order_release);
     }
 
     void run(int i)
@@ -69,23 +68,23 @@ public:
     }
 
     int next_task() {
-        return m_next_tasks.fetch_add(1, std::memory_order_relaxed);
+        return m_next_tasks.fetch_add(1);
     }
     
     bool completed() {
-        auto complete = m_complete_tasks.load();
+        auto complete = m_complete_tasks.load(std::memory_order_acquire);
         // return complete != 0 and complete >= m_total_tasks;
         return complete >= m_total_tasks;
     }
 
     void mark_complete() {
-        m_complete_tasks.fetch_add(1, std::memory_order_relaxed);
+        m_complete_tasks.fetch_add(1, std::memory_order_release);
     }
 
     alignas(64) std::atomic<int> m_next_tasks{0} ;
     alignas(64) std::atomic<int> m_complete_tasks{0};
-    alignas(64) std::atomic<bool> m_active{false} ;
-    volatile int m_total_tasks;
+    alignas(64) std::atomic<bool> m_active{false};
+    volatile int m_total_tasks{0};
     IRunnable* m_runnable;
 };
 
@@ -95,7 +94,7 @@ inline void thread_executor(int thread_id, Context* context) {
     auto &runtime = context->m_runtime;
 
     while (not m_done) {
-        while (not runtime.completed() and runtime.m_active)
+        while (runtime.m_active and not runtime.completed())
         {
             int process_id = runtime.next_task();
             // debug_print("Thread %d picked task %d\n", thread_id, process_id);
@@ -112,17 +111,10 @@ inline void thread_executor(int thread_id, Context* context) {
             context->notify();
         }
 
-        // if (runtime.m_active and runtime.completed()) {
-        //     bool expected = true;
-        //     debug_print("Thread %d finished, is_completed: %b, tasks: %d\n", thread_id, runtime.completed(), runtime.m_complete_tasks.load());
-
-        //     if (not runtime.m_active.compare_exchange_strong(expected, false)) return;
-        //     if (not spinning) {
-        //         // ensure that all threads have finished before going to sleep
-        //         // notify
-        //         context->notify();
-        //     }
-        // }
+        if (not runtime.m_active)
+        {
+            std::this_thread::yield();
+        }
     }
 }
 

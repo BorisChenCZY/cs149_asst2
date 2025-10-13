@@ -53,10 +53,13 @@ class TaskSystemParallelSpawn: public ITaskSystem {
 class Runtime {
 public:
     void add_job(IRunnable* runnable, int total_tasks) {
+        // std::lock_guard<std::mutex> lock();
+        std::unique_lock<std::mutex> lock(m_complete_mutex);
+        std::unique_lock<std::mutex> lock2(m_next_mutex);
         m_runnable = runnable;
-        m_next_tasks.store(0);
+        m_next_tasks = 0;
 
-        m_complete_tasks.store(0);
+        m_complete_tasks= 0;
         m_total_tasks = total_tasks;
 
         m_active.store(true, std::memory_order_release);
@@ -68,24 +71,30 @@ public:
     }
 
     int next_task() {
-        return m_next_tasks.fetch_add(1);
+        std::lock_guard<std::mutex> lock(m_next_mutex);
+        return m_next_tasks++;
     }
     
     bool completed() {
-        auto complete = m_complete_tasks.load(std::memory_order_acquire);
+        std::lock_guard<std::mutex> lock(m_complete_mutex);
+        auto complete = m_complete_tasks;
         // return complete != 0 and complete >= m_total_tasks;
         return complete >= m_total_tasks;
     }
 
     void mark_complete() {
-        m_complete_tasks.fetch_add(1, std::memory_order_release);
+        // m_complete_tasks.fetch_add(1, std::memory_order_release);
+        std::lock_guard<std::mutex> lock(m_complete_mutex);
+        m_complete_tasks++;
     }
 
-    alignas(64) std::atomic<int> m_next_tasks{0} ;
-    alignas(64) std::atomic<int> m_complete_tasks{0};
+    int m_next_tasks{0} ;
+    int m_complete_tasks{0};
     alignas(64) std::atomic<bool> m_active{false};
     volatile int m_total_tasks{0};
     IRunnable* m_runnable;
+    std::mutex m_complete_mutex;
+    std::mutex m_next_mutex;
 };
 
 template <typename Context, bool spinning = false>
@@ -109,11 +118,6 @@ inline void thread_executor(int thread_id, Context* context) {
         if (not spinning and runtime.completed())
         {
             context->notify();
-        }
-
-        if (not runtime.m_active)
-        {
-            std::this_thread::yield();
         }
     }
 }

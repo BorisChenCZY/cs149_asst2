@@ -142,56 +142,44 @@ class TaskSystemParallelThreadPoolSpinning: public ITaskSystem {
  * a thread pool. See definition of ITaskSystem in
  * itasksys.h for documentation of the ITaskSystem interface.
  */
-struct TSN_TaskGroup {
-    TaskID id;
-    IRunnable* runnable;
-    int numTotalTasks;
-    std::atomic<int> tasksRemaining{0};
-    std::atomic<int> remainingDeps{0};
-    std::vector<TaskID> dependents; // children launches
-
-    TSN_TaskGroup(TaskID id_, IRunnable* r, int n, int deps)
-        : id(id_), runnable(r), numTotalTasks(n) {
-        tasksRemaining.store(n);
-        remainingDeps.store(deps);
-    }
-};
-
-struct TSN_Task {
-    std::shared_ptr<TSN_TaskGroup> group;
-    int taskId;
-};
-
 class TaskSystemParallelThreadPoolSleeping: public ITaskSystem {
-public:
-    TaskSystemParallelThreadPoolSleeping(int num_threads);
-    ~TaskSystemParallelThreadPoolSleeping();
-    const char* name();
-    void run(IRunnable* runnable, int num_total_tasks);
-    TaskID runAsyncWithDeps(IRunnable* runnable, int num_total_tasks,
-                            const std::vector<TaskID>& deps);
-    void sync();
+    public:
+        TaskSystemParallelThreadPoolSleeping(int num_threads);
+        ~TaskSystemParallelThreadPoolSleeping();
+        const char* name();
+        void run(IRunnable* runnable, int num_total_tasks);
+        TaskID runAsyncWithDeps(IRunnable* runnable, int num_total_tasks,
+                                const std::vector<TaskID>& deps);
+        void sync();
 
-private:
-    // worker pool
-    std::vector<std::thread> workers_;
-    std::atomic<bool> stop_{false};
+    private:
+        // Part A members (from your teammate's implementation)
+        Runtime m_runtime;
+        std::vector<std::thread> m_threads;
+        std::atomic<bool> m_done{false};
+        std::mutex m_completed_mutex;
+        std::condition_variable m_completed_cv;
+        int m_max_threads = 0;
 
-    // global scheduling state
-    std::mutex mtx_;
-    std::condition_variable cvTasks_;
-    std::queue<TSN_Task> readyTasks_;
-
-    std::unordered_map<TaskID, std::shared_ptr<TSN_TaskGroup>> groups_;
-    std::unordered_map<TaskID, std::vector<TaskID>> pendingDependents_; // when parent not yet created
-
-    std::atomic<TaskID> nextId_{1};
-    std::atomic<int> pendingLaunches_{0};
-    std::condition_variable cvAllDone_;
-    std::mutex mtxAllDone_;
-
-    void workerLoop();
-    void enqueueGroupTasksLocked(const std::shared_ptr<TSN_TaskGroup>& g);
+        // Part B members for async task execution and dependencies
+        std::atomic<TaskID> m_next_task_id{1};  // Start from 1, 0 reserved for invalid
+        
+        // Simplified task management
+        std::mutex m_task_mutex;
+        std::queue<Task> m_ready_queue;  // Tasks ready to execute
+        std::condition_variable m_task_cv;  // Signal when tasks are available
+        
+        // Simplified dependency tracking
+        std::unordered_map<TaskID, std::shared_ptr<TaskLaunch>> m_task_launches;
+        std::unordered_map<TaskID, std::unordered_set<TaskID>> m_dependents;  // Which launches depend on this one (legacy)
+        
+        // Sync tracking
+        std::atomic<int> m_pending_launches{0};  // Number of launches not yet complete
+        
+        // Helper methods
+        bool are_dependencies_satisfied(const std::vector<TaskID>& deps);
+        void move_ready_tasks_to_queue(TaskID completed_launch_id);
+        void worker_thread_function();
 };
 
 #endif

@@ -9,6 +9,7 @@
 #include <queue>
 #include <condition_variable>
 #include <cassert>
+#include <unordered_map>
 
 template <typename ...Args>
 inline void debug_print(const char* msg, Args... args) {
@@ -72,9 +73,9 @@ class TaskSystemParallelThreadPoolSpinning: public ITaskSystem {
 struct Job {
     IRunnable* runnable;
     int total_tasks;
-    std::vector<TaskID> deps;
-    bool completed = false;
     int job_id;
+    std::atomic<int> remaining_deps{0};
+    std::atomic<int> tasks_remaining{0};
 };
 
 struct Task {
@@ -84,30 +85,37 @@ struct Task {
     TaskID job_id;
 };
 
+class DependencyGraph;  // Forward declaration
+
 class Runtime {
 public:
-    void add_jobs(const std::vector<Job>& jobs) {
+    void add_jobs(const std::vector<Job*>& jobs) {
         std::lock_guard<std::mutex> lock(m_queue_mutex);
-        m_complete_tasks = 0;
+
+        // Reset counters - this is safe because sync() waits for completion before calling this
+        m_complete_tasks.store(0);
         m_total_tasks = 0;
 
         // Add all tasks from all jobs to the queue
         for (const auto& job : jobs) {
-            for (int i = 0; i < job.total_tasks; i++) {
+            for (int i = 0; i < job->total_tasks; i++) {
                 Task task;
-                task.runnable = job.runnable;
+                task.runnable = job->runnable;
                 task.task_id = i;
-                task.total_tasks = job.total_tasks;
-                task.job_id = job.job_id;
+                task.total_tasks = job->total_tasks;
+                task.job_id = job->job_id;
                 m_tasks.push(task);
                 m_total_tasks++;
             }
         }
+        m_task_cv.notify_all();
     }
 
     void add_job(IRunnable* runnable, int total_tasks) {
         std::lock_guard<std::mutex> lock(m_queue_mutex);
-        m_complete_tasks = 0;
+
+        // Reset counters - this is safe because run() waits for completion before calling this
+        m_complete_tasks.store(0);
         m_total_tasks = 0;
 
         for (int i = 0; i < total_tasks; i++) {
@@ -119,20 +127,12 @@ public:
             m_tasks.push(task);
             m_total_tasks++;
         }
+        m_task_cv.notify_all();
     }
 
     bool empty() {
         std::lock_guard<std::mutex> lock(m_queue_mutex);
         return m_tasks.empty();
-    }
-
-    Task pop() {
-        std::lock_guard<std::mutex> lock(m_queue_mutex);
-        Task invalid = {nullptr, -1, -1, -1};
-        if (m_tasks.empty()) return invalid;
-        Task task = m_tasks.front();
-        m_tasks.pop();
-        return task;
     }
 
     void add_complete() {
@@ -143,14 +143,39 @@ public:
         return m_complete_tasks.load() >= m_total_tasks;
     }
 
+    void set_dep_graph(DependencyGraph* dep_graph) {
+        m_dep_graph = dep_graph;
+    }
+
+    void init_job_tracking(size_t num_jobs) {
+        m_jobs_completed.store(0);
+        m_total_jobs = num_jobs;
+    }
+
+    bool all_jobs_complete() {
+        return m_jobs_completed.load() >= m_total_jobs;
+    }
+
     std::mutex m_queue_mutex;
+    std::condition_variable m_task_cv;
     std::queue<Task> m_tasks;
     int m_total_tasks;
     std::atomic<int> m_complete_tasks{0};
+
+    // Dependency-driven execution tracking
+    DependencyGraph* m_dep_graph = nullptr;
+    std::atomic<size_t> m_jobs_completed{0};
+    size_t m_total_jobs = 0;
 };
 
 class DependencyGraph {
     public:
+        ~DependencyGraph() {
+            for (Job* job : m_jobs) {
+                delete job;
+            }
+        }
+
         TaskID add_job(IRunnable* runnable, int total_tasks, const std::vector<TaskID>& deps) {
             TaskID new_id = m_jobs.size();
 
@@ -161,15 +186,21 @@ class DependencyGraph {
                 }
             }
 
-            Job job;
-            job.runnable = runnable;
-            job.total_tasks = total_tasks;
-            job.deps = deps;
-            job.completed = false;
-            job.job_id = new_id;
+            Job* job = new Job();
+            job->runnable = runnable;
+            job->total_tasks = total_tasks;
+            job->job_id = new_id;
+            job->remaining_deps.store(deps.size());
+            job->tasks_remaining.store(total_tasks);
             m_jobs.push_back(job);
 
             m_topo_order.push_back(new_id);
+
+            // Build reverse adjacency list: for each dependency, track that this job depends on it
+            m_dependents.resize(new_id + 1);
+            for (TaskID dep : deps) {
+                m_dependents[dep].push_back(new_id);
+            }
 
             return new_id;
         }
@@ -178,8 +209,8 @@ class DependencyGraph {
             return m_topo_order;
         }
 
-        std::vector<Job> get_topology_sort() {
-            std::vector<Job> sorted_jobs;
+        std::vector<Job*> get_topology_sort() {
+            std::vector<Job*> sorted_jobs;
             sorted_jobs.reserve(m_topo_order.size());
 
             for (TaskID id : m_topo_order) {
@@ -191,38 +222,33 @@ class DependencyGraph {
 
         Job* get_job(TaskID id) {
             if (id < m_jobs.size()) {
-                return &m_jobs[id];
+                return m_jobs[id];
             }
             return nullptr;
         }
 
-        void mark_completed(TaskID id) {
-            std::unique_lock<std::mutex> lock(m_graph_mutex);
-            if (id < m_jobs.size()) {
-                m_jobs[id].completed = true;
-            }
-        }
-
         bool deps_completed(TaskID id) {
-            std::unique_lock<std::mutex> lock(m_graph_mutex);
+            // This method is unused but kept for API compatibility
+            // In the optimized version, we track dependencies via remaining_deps atomic
             if (id >= m_jobs.size()) return false;
-
-            for (TaskID dep : m_jobs[id].deps) {
-                if (dep >= m_jobs.size() || !m_jobs[dep].completed) {
-                    return false;
-                }
-            }
-            return true;
+            return m_jobs[id]->remaining_deps.load() == 0;
         }
 
         size_t size() const {
             return m_jobs.size();
         }
 
+        const std::vector<TaskID>& get_dependents(TaskID id) const {
+            static const std::vector<TaskID> empty;
+            if (id >= m_dependents.size()) return empty;
+            return m_dependents[id];
+        }
+
         mutable std::mutex m_graph_mutex;
         std::condition_variable m_graph_cv;
-        std::vector<Job> m_jobs;
+        std::vector<Job*> m_jobs;
         std::vector<TaskID> m_topo_order;  // Pre-computed during insertion
+        std::vector<std::vector<TaskID>> m_dependents;  // m_dependents[i] = jobs that depend on job i
 };
 
 /*

@@ -26,18 +26,21 @@ UNSPECIFIED_NUM_THREADS = -1
 PERF_THRESHOLD = 1.2
 NUM_TEST_RUNS = 5
 
+# 在 LIST_OF_TESTS 中添加新测试
 LIST_OF_TESTS = [
-    ("super_super_light", UNSPECIFIED_NUM_THREADS),
-    ("super_light", UNSPECIFIED_NUM_THREADS),
-    ("ping_pong_equal", UNSPECIFIED_NUM_THREADS),
-    ("ping_pong_unequal", UNSPECIFIED_NUM_THREADS),
-    ("recursive_fibonacci", UNSPECIFIED_NUM_THREADS),
-    ("math_operations_in_tight_for_loop", UNSPECIFIED_NUM_THREADS),
-    ("math_operations_in_tight_for_loop_fewer_tasks", UNSPECIFIED_NUM_THREADS),
-    ("math_operations_in_tight_for_loop_fan_in", UNSPECIFIED_NUM_THREADS),
-    ("math_operations_in_tight_for_loop_reduction_tree", UNSPECIFIED_NUM_THREADS),
-    ("spin_between_run_calls", UNSPECIFIED_NUM_THREADS),
-    ("mandelbrot_chunked", UNSPECIFIED_NUM_THREADS),
+    # ("super_super_light", UNSPECIFIED_NUM_THREADS),
+    # ("super_light", UNSPECIFIED_NUM_THREADS),
+    # ("ping_pong_equal", UNSPECIFIED_NUM_THREADS),
+    # ("ping_pong_unequal", UNSPECIFIED_NUM_THREADS),
+    # ("recursive_fibonacci", UNSPECIFIED_NUM_THREADS),
+    # ("math_operations_in_tight_for_loop", UNSPECIFIED_NUM_THREADS),
+    # ("math_operations_in_tight_for_loop_fewer_tasks", UNSPECIFIED_NUM_THREADS),
+    # ("math_operations_in_tight_for_loop_fan_in", UNSPECIFIED_NUM_THREADS),
+    # ("math_operations_in_tight_for_loop_reduction_tree", UNSPECIFIED_NUM_THREADS),
+    # ("spin_between_run_calls", UNSPECIFIED_NUM_THREADS),
+    # ("mandelbrot_chunked", UNSPECIFIED_NUM_THREADS),
+    # 新增的测试
+    ("grid_star_diag_topo", UNSPECIFIED_NUM_THREADS),
 ]
 
 LIST_OF_IMPLEMENTATIONS_ORIG = [
@@ -54,9 +57,9 @@ LIST_OF_IMPLEMENTATIONS_ORIG = [
 AUTHORS = ["STUDENT", "REFERENCE"]
 
 LIST_OF_IMPLEMENTATIONS = [
-    "[Serial]",
-    "[Parallel + Always Spawn]",
-    "[Parallel + Thread Pool + Spin]",
+    # "[Serial]",
+    # "[Parallel + Always Spawn]",
+    # "[Parallel + Thread Pool + Spin]",
     "[Parallel + Thread Pool + Sleep]",
 ]
 

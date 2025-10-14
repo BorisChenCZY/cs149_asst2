@@ -114,6 +114,206 @@ TestResults yourTest(ITaskSystem* t, bool do_async, int num_elements, int num_bu
 }
 
 /*
+ * Grid + Star Topology Test with Internal Parameter Definition
+ * 
+ * Structure:
+ * 1. Grid topology: NxN grid where each task depends on its left and top neighbors
+ * 2. Star topology: All grid tasks depend on a central coordinator task
+ * 3. Diagonal dependencies: Each task on main diagonal depends on its diagonal predecessor
+ * 
+ * Parameters defined internally like pingPongTest
+ */
+class GridStarDiagonalTask : public IRunnable {
+    public:
+        int* output;
+        int array_size;
+        int task_id;
+        int task_type; // 0: coordinator, 1: grid task
+        
+        // Default constructor
+        GridStarDiagonalTask() : output(nullptr), array_size(0), task_id(0), task_type(0) {}
+        
+        // Parameterized constructor
+        GridStarDiagonalTask(int* out, int size, int id, int type) 
+            : output(out), array_size(size), task_id(id), task_type(type) {}
+        ~GridStarDiagonalTask() {}
+        
+        void runTask(int task_id, int num_total_tasks) {
+            int elements_per_task = array_size / num_total_tasks;
+            int start = task_id * elements_per_task;
+            int end = std::min(start + elements_per_task, array_size);
+            
+            if (task_type == 0) {
+                // Coordinator task: initializes the grid
+                for (int i = start; i < end; i++) {
+                    output[i] = 1; // Base value
+                }
+            } else {
+                // Grid task: processes based on its position
+                for (int i = start; i < end; i++) {
+                    // Each grid task adds its task_id to the value
+                    output[i] += this->task_id;
+                }
+            }
+        }
+};
+
+TestResults gridStarDiagonalTopologyTestBase(ITaskSystem* t, bool do_async) {
+    // Define parameters internally like pingPongTest
+    int num_tasks = 16;
+    int num_bulk_task_launches = 9; // 3x3 grid (must be perfect square)
+    int num_elements = 1000;
+    
+    // Check if num_bulk_task_launches is a perfect square
+    int grid_size = (int)sqrt(num_bulk_task_launches);
+    if (grid_size * grid_size != num_bulk_task_launches) {
+        printf("Error: num_bulk_task_launches (%d) must be a perfect square\n", num_bulk_task_launches);
+        TestResults result;
+        result.passed = false;
+        result.time = 0.0;
+        return result;
+    }
+    
+    printf("Grid size: %dx%d (total task groups: %d)\n", grid_size, grid_size, num_bulk_task_launches);
+    
+    // Initialize input and output buffers
+    int* output = new int[num_elements];
+    
+    // Initialize output array
+    for (int i = 0; i < num_elements; i++) {
+        output[i] = 0;
+    }
+    
+    // Create task instances
+    // 1 coordinator task + num_bulk_task_launches grid tasks
+    GridStarDiagonalTask coordinator(output, num_elements, 0, 0);
+    
+    // Create NxN grid tasks
+    GridStarDiagonalTask** grid_tasks = new GridStarDiagonalTask*[grid_size];
+    for (int i = 0; i < grid_size; i++) {
+        grid_tasks[i] = new GridStarDiagonalTask[grid_size];
+        for (int j = 0; j < grid_size; j++) {
+            grid_tasks[i][j] = GridStarDiagonalTask(output, num_elements, i*grid_size + j + 1, 1);
+        }
+    }
+    
+    // Run the test
+    double start_time = CycleTimer::currentSeconds();
+    
+    if (do_async) {
+        // Async version: Test grid + star + diagonal topology
+        
+        // 1. Launch coordinator task first (no dependencies)
+        std::vector<TaskID> deps;
+        TaskID coordinator_id = t->runAsyncWithDeps(&coordinator, num_tasks, deps);
+        
+        // 2. Launch grid tasks with dependencies
+        TaskID** grid_ids = new TaskID*[grid_size];
+        for (int i = 0; i < grid_size; i++) {
+            grid_ids[i] = new TaskID[grid_size];
+        }
+        
+        for (int i = 0; i < grid_size; i++) {
+            for (int j = 0; j < grid_size; j++) {
+                std::vector<TaskID> task_deps;
+                
+                // Star dependency: all grid tasks depend on coordinator
+                task_deps.push_back(coordinator_id);
+                
+                // Grid dependencies: each task depends on its left and top neighbors
+                if (i > 0) {
+                    // Depend on top neighbor
+                    task_deps.push_back(grid_ids[i-1][j]);
+                }
+                if (j > 0) {
+                    // Depend on left neighbor
+                    task_deps.push_back(grid_ids[i][j-1]);
+                }
+                
+                // Diagonal dependency: main diagonal tasks depend on their diagonal predecessor
+                if (i == j && i > 0) {
+                    // Main diagonal: (i,i) depends on (i-1,i-1)
+                    task_deps.push_back(grid_ids[i-1][j-1]);
+                }
+                
+                // Each grid task uses num_tasks sub-tasks
+                grid_ids[i][j] = t->runAsyncWithDeps(&grid_tasks[i][j], num_tasks, task_deps);
+            }
+        }
+        
+        t->sync();
+        
+        // Clean up grid_ids
+        for (int i = 0; i < grid_size; i++) {
+            delete[] grid_ids[i];
+        }
+        delete[] grid_ids;
+        
+    } else {
+        // Sync version: Run tasks sequentially
+        t->run(&coordinator, num_tasks);
+        
+        // Run grid tasks in order (top to bottom, left to right)
+        for (int i = 0; i < grid_size; i++) {
+            for (int j = 0; j < grid_size; j++) {
+                t->run(&grid_tasks[i][j], num_tasks);
+            }
+        }
+    }
+    
+    double end_time = CycleTimer::currentSeconds();
+    
+    // Correctness validation
+    TestResults results;
+    results.passed = true;
+    
+    for (int i = 0; i < num_elements; i++) {
+        int expected = 0;
+        
+        // Calculate expected value
+        // Coordinator adds 1
+        expected += 1;
+        
+        // Each grid task adds its task_id (1 to num_bulk_task_launches)
+        // Total task groups = 1 + num_bulk_task_launches
+        for (int j = 0; j < num_tasks; j++) {
+            expected += (j + 1); // task_id for each task
+        }
+        
+        if (output[i] != expected) {
+            results.passed = false;
+            printf("Element %d: got %d, expected %d\n", i, output[i], expected);
+            break;
+        }
+    }
+    
+    results.time = end_time - start_time;
+    
+    // Clean up
+    delete[] output;
+    for (int i = 0; i < grid_size; i++) {
+        delete[] grid_tasks[i];
+    }
+    delete[] grid_tasks;
+    
+    return results;
+}
+
+// Wrapper functions like pingPongTest
+TestResults gridStarDiagonalTopologyTest(ITaskSystem* t) {
+    return gridStarDiagonalTopologyTestBase(t, false);
+}
+
+TestResults gridStarDiagonalTopologyTestAsync(ITaskSystem* t) {
+    return gridStarDiagonalTopologyTestBase(t, true);
+}
+
+
+
+
+
+
+/*
  * ==================================================================
  *   Begin task definitions used in tests
  * ==================================================================

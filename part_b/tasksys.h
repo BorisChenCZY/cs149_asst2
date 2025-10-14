@@ -8,6 +8,7 @@
 #include <mutex>
 #include <condition_variable>
 #include <vector>
+#include <chrono>
 
 template <typename ...Args>
 inline void debug_print(const char* msg, Args... args) {
@@ -128,27 +129,34 @@ public:
     }
 
     TaskID add_job_with_deps(IRunnable* runnable, int total_tasks, const std::vector<TaskID>& deps) {
-        std::unique_lock<std::mutex> lock(m_jobs_mutex);
+        std::shared_ptr<Job> job;
+        TaskID job_id;
 
-        // Calculate TaskID as current size of jobs vector
-        TaskID job_id = static_cast<TaskID>(m_jobs.size());
+        // First, acquire jobs mutex to create job and update dependencies
+        {
+            std::unique_lock<std::mutex> lock(m_jobs_mutex);
 
-        // Create new job
-        auto job = std::make_shared<Job>(runnable, total_tasks, deps.size());
-        job->job_id = job_id;
+            // Calculate TaskID as current size of jobs vector
+            job_id = static_cast<TaskID>(m_jobs.size());
 
-        // Build reverse dependency map
-        for (TaskID dep_id : deps) {
-            // Validate dependency exists
-            if (dep_id >= 0 && dep_id < static_cast<TaskID>(m_jobs.size())) {
-                m_jobs[dep_id]->dependents.push_back(job_id);
+            // Create new job
+            job = std::make_shared<Job>(runnable, total_tasks, deps.size());
+            job->job_id = job_id;
+
+            // Build reverse dependency map
+            for (TaskID dep_id : deps) {
+                // Validate dependency exists
+                if (dep_id >= 0 && dep_id < static_cast<TaskID>(m_jobs.size())) {
+                    m_jobs[dep_id]->dependents.push_back(job_id);
+                }
             }
-        }
 
-        // Add job to vector
-        m_jobs.push_back(job);
+            // Add job to vector
+            m_jobs.push_back(job);
+        } // Release jobs mutex before acquiring task mutex
 
         // If no dependencies, add to ready queue
+        // Now acquire task mutex separately to avoid deadlock
         if (deps.empty()) {
             std::unique_lock<std::mutex> task_lock(m_task_mutex);
             m_tasks.push_back(job);
@@ -159,35 +167,45 @@ public:
     }
 
     void on_job_complete(TaskID job_id) {
-        std::unique_lock<std::mutex> lock(m_jobs_mutex);
+        std::vector<std::shared_ptr<Job>> ready_jobs;
 
-        if (job_id < 0 || job_id >= static_cast<TaskID>(m_jobs.size())) {
-            return;
-        }
+        // First, acquire jobs mutex to process dependencies
+        {
+            std::unique_lock<std::mutex> lock(m_jobs_mutex);
 
-        auto& job = m_jobs[job_id];
-        bool new_work_available = false;
+            if (job_id < 0 || job_id >= static_cast<TaskID>(m_jobs.size())) {
+                return;
+            }
 
-        // Process all dependents
-        for (TaskID dependent_id : job->dependents) {
-            if (dependent_id >= 0 && dependent_id < static_cast<TaskID>(m_jobs.size())) {
-                auto& dependent = m_jobs[dependent_id];
+            auto& job = m_jobs[job_id];
 
-                // Atomically decrement pending dependencies
-                int prev_deps = dependent->pending_deps.fetch_sub(1, std::memory_order_acq_rel);
+            // Process all dependents
+            for (TaskID dependent_id : job->dependents) {
+                if (dependent_id >= 0 && dependent_id < static_cast<TaskID>(m_jobs.size())) {
+                    auto& dependent = m_jobs[dependent_id];
 
-                // If this was the last dependency, push to ready queue
-                if (prev_deps == 1) {
-                    dependent->is_ready = true;
-                    std::unique_lock<std::mutex> task_lock(m_task_mutex);
-                    m_tasks.push_back(dependent);
-                    new_work_available = true;
+                    // Atomically decrement pending dependencies
+                    int prev_deps = dependent->pending_deps.fetch_sub(1, std::memory_order_acq_rel);
+
+                    // If this was the last dependency, mark as ready
+                    if (prev_deps == 1) {
+                        dependent->is_ready = true;
+                        ready_jobs.push_back(dependent);
+                    }
                 }
+            }
+        } // Release jobs mutex before acquiring task mutex
+
+        // Now add ready jobs to task queue
+        if (!ready_jobs.empty()) {
+            std::unique_lock<std::mutex> task_lock(m_task_mutex);
+            for (auto& ready_job : ready_jobs) {
+                m_tasks.push_back(ready_job);
             }
         }
 
         // Notify worker threads if new work became available
-        if (new_work_available) {
+        if (!ready_jobs.empty()) {
             notify_next();
         }
     }
@@ -214,6 +232,16 @@ public:
 
     bool all_tasks_done() {
         std::unique_lock<std::mutex> lock(m_task_mutex);
+        for (const auto& task : m_tasks) {
+            if (!task->is_done()) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    // Version without locking (caller must hold m_task_mutex)
+    bool all_tasks_done_unsafe() const {
         for (const auto& task : m_tasks) {
             if (!task->is_done()) {
                 return false;
@@ -256,18 +284,37 @@ public:
         return true;
     }
 
+    // Version without locking (caller must hold m_jobs_mutex)
+    bool all_jobs_done_unsafe() const {
+        for (const auto& job : m_jobs) {
+            if (!job->is_done()) {
+                return false;
+            }
+        }
+        return true;
+    }
+
     void clear_jobs() {
         std::unique_lock<std::mutex> lock(m_jobs_mutex);
         m_jobs.clear();
     }
 
     void wait_all_jobs_complete() {
-        std::unique_lock<std::mutex> lock(m_complete_mutex);
-        m_complete_cv.wait(lock, [this]{ return all_jobs_done(); });
+        while (true) {
+            {
+                std::unique_lock<std::mutex> lock(m_jobs_mutex);
+                if (all_jobs_done_unsafe()) {
+                    return;
+                }
+            }
+            // Wait for notification, then recheck
+            std::unique_lock<std::mutex> lock(m_complete_mutex);
+            m_complete_cv.wait_for(lock, std::chrono::milliseconds(10));
+        }
     }
 
     void notify_complete() {
-        m_complete_cv.notify_one();
+        m_complete_cv.notify_all();
     }
 
     void notify_next() {
@@ -279,8 +326,17 @@ public:
     }
 
     void wait_complete() {
-        std::unique_lock<std::mutex> lock(m_complete_mutex);
-        m_complete_cv.wait(lock, [this]{ return all_tasks_done(); });
+        while (true) {
+            {
+                std::unique_lock<std::mutex> lock(m_task_mutex);
+                if (all_tasks_done_unsafe()) {
+                    return;
+                }
+            }
+            // Wait for notification, then recheck
+            std::unique_lock<std::mutex> lock(m_complete_mutex);
+            m_complete_cv.wait_for(lock, std::chrono::milliseconds(10));
+        }
     }
 
 public:
@@ -336,16 +392,21 @@ inline void thread_executor(int thread_id, Context* context) {
         }
 
         if (not spinning) {
-            /*
+            // Check conditions separately to avoid nested locking in predicate
+            bool should_wait = true;
             {
+                std::unique_lock<std::mutex> task_lock(runtime.m_task_mutex);
+                if (m_done || (runtime.m_active.load() && !runtime.all_tasks_done_unsafe())) {
+                    should_wait = false;
+                }
+            }
+
+            if (should_wait) {
                 std::unique_lock<std::mutex> lk(runtime.m_complete_mutex);
-                runtime.m_next_cv.wait(lk, [&](){
-                    return m_done || (runtime.m_active.load() and not runtime.all_tasks_done());
-                });
+                runtime.m_next_cv.wait_for(lk, std::chrono::milliseconds(10));
             }
             runtime.notify_next();
-            */
-            std::this_thread::yield();
+            // std::this_thread::yield();
         }
         else
         {

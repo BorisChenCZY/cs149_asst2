@@ -136,16 +136,14 @@ TaskSystemParallelThreadPoolSleeping::TaskSystemParallelThreadPoolSleeping(int n
 
     auto thread_run = [&](int thread_id) {
         while (not m_done) {
-            int job = -1;
-            job = m_runtime.pop();
+            Task task = m_runtime.pop();
 
-            while (job != -1)
+            while (task.runnable != nullptr)
             {
-                m_runtime.run(job);
+                task.runnable->runTask(task.task_id, task.total_tasks);
                 m_runtime.add_complete();
-                job = m_runtime.pop();
+                task = m_runtime.pop();
             }
-
 
             // notify completed
             {
@@ -212,22 +210,58 @@ TaskID TaskSystemParallelThreadPoolSleeping::runAsyncWithDeps(IRunnable* runnabl
 void TaskSystemParallelThreadPoolSleeping::sync() {
 
     //
-    // TODO: CS149 students will modify the implementation of this method in Part B.
+    // Level-based execution: execute all jobs with satisfied dependencies,
+    // wait for completion, then repeat until all jobs are done
     //
-    for (auto& job: m_dep_graph.get_topology_sort())
-    {
-        debug_print("Main thread adding job with %d tasks\n", job.total_tasks);
-        m_runtime.add_job(job.runnable, job.total_tasks);
-        
+
+    size_t total_jobs = m_dep_graph.size();
+    std::vector<bool> completed(total_jobs, false);
+    size_t jobs_completed = 0;
+
+    while (jobs_completed < total_jobs) {
+        // Find all jobs with satisfied dependencies (ready to run)
+        std::vector<Job> ready_jobs;
+
+        for (size_t job_id = 0; job_id < total_jobs; job_id++) {
+            if (completed[job_id]) continue;
+
+            // Check if all dependencies are satisfied
+            bool deps_ready = m_dep_graph.deps_completed(job_id);
+
+            if (deps_ready) {
+                Job* job = m_dep_graph.get_job(job_id);
+                if (job != nullptr) {
+                    ready_jobs.push_back(*job);
+                    debug_print("Main thread: Job %d is ready (deps satisfied)\n", job_id);
+                }
+            }
+        }
+
+        if (ready_jobs.empty()) {
+            // No jobs ready but not all completed - shouldn't happen unless there's a cycle
+            debug_print("ERROR: No ready jobs but %zu jobs remain\n", total_jobs - jobs_completed);
+            break;
+        }
+
+        // Add all ready jobs to the runtime for parallel execution
+        debug_print("Main thread: Adding %zu ready jobs to runtime\n", ready_jobs.size());
+        m_runtime.add_jobs(ready_jobs);
+
+        // Wait for all jobs in this level to complete
         {
             std::unique_lock<std::mutex> lock(m_completed_mutex);
             m_completed_cv.wait(lock, [&]{ return m_runtime.is_all_complete(); });
         }
 
-        m_dep_graph.mark_completed(&job - &m_dep_graph.get_topology_sort()[0]);
-
-        debug_print("Main thread job %d finished\n", job.job_id);
+        // Mark all completed jobs and update counter
+        for (const auto& job : ready_jobs) {
+            m_dep_graph.mark_completed(job.job_id);
+            completed[job.job_id] = true;
+            jobs_completed++;
+            debug_print("Main thread: Job %d completed\n", job.job_id);
+        }
     }
 
+    debug_print("Main thread: All %zu jobs completed\n", total_jobs);
     return;
 }

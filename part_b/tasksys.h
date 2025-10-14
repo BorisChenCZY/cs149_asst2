@@ -69,35 +69,70 @@ class TaskSystemParallelThreadPoolSpinning: public ITaskSystem {
         void sync();
 };
 
+struct Job {
+    IRunnable* runnable;
+    int total_tasks;
+    std::vector<TaskID> deps;
+    bool completed = false;
+    int job_id;
+};
+
+struct Task {
+    IRunnable* runnable;
+    int task_id;
+    int total_tasks;
+    TaskID job_id;
+};
 
 class Runtime {
 public:
+    void add_jobs(const std::vector<Job>& jobs) {
+        std::lock_guard<std::mutex> lock(m_queue_mutex);
+        m_complete_tasks = 0;
+        m_total_tasks = 0;
+
+        // Add all tasks from all jobs to the queue
+        for (const auto& job : jobs) {
+            for (int i = 0; i < job.total_tasks; i++) {
+                Task task;
+                task.runnable = job.runnable;
+                task.task_id = i;
+                task.total_tasks = job.total_tasks;
+                task.job_id = job.job_id;
+                m_tasks.push(task);
+                m_total_tasks++;
+            }
+        }
+    }
+
     void add_job(IRunnable* runnable, int total_tasks) {
         std::lock_guard<std::mutex> lock(m_queue_mutex);
         m_complete_tasks = 0;
-        for (int i = 0; i < total_tasks; i++) {
-            m_jobs.push(i);
-        }
-        m_total_tasks = total_tasks;
-        m_runnable = runnable;
-    }
+        m_total_tasks = 0;
 
-    void run(int i)
-    {
-        m_runnable->runTask(i, m_total_tasks);
+        for (int i = 0; i < total_tasks; i++) {
+            Task task;
+            task.runnable = runnable;
+            task.task_id = i;
+            task.total_tasks = total_tasks;
+            task.job_id = -1;
+            m_tasks.push(task);
+            m_total_tasks++;
+        }
     }
 
     bool empty() {
         std::lock_guard<std::mutex> lock(m_queue_mutex);
-        return m_jobs.empty();
+        return m_tasks.empty();
     }
 
-    int pop() {
+    Task pop() {
         std::lock_guard<std::mutex> lock(m_queue_mutex);
-        if (m_jobs.empty()) return -1;
-        int job = m_jobs.front();
-        m_jobs.pop();
-        return job;
+        Task invalid = {nullptr, -1, -1, -1};
+        if (m_tasks.empty()) return invalid;
+        Task task = m_tasks.front();
+        m_tasks.pop();
+        return task;
     }
 
     void add_complete() {
@@ -109,18 +144,9 @@ public:
     }
 
     std::mutex m_queue_mutex;
-    std::queue<int> m_jobs;
+    std::queue<Task> m_tasks;
     int m_total_tasks;
     std::atomic<int> m_complete_tasks{0};
-    IRunnable* m_runnable;
-};
-
-struct Job {
-    IRunnable* runnable;
-    int total_tasks;
-    std::vector<TaskID> deps;
-    bool completed = false;
-    int job_id;
 };
 
 class DependencyGraph {
@@ -171,12 +197,14 @@ class DependencyGraph {
         }
 
         void mark_completed(TaskID id) {
+            std::unique_lock<std::mutex> lock(m_graph_mutex);
             if (id < m_jobs.size()) {
                 m_jobs[id].completed = true;
             }
         }
 
         bool deps_completed(TaskID id) {
+            std::unique_lock<std::mutex> lock(m_graph_mutex);
             if (id >= m_jobs.size()) return false;
 
             for (TaskID dep : m_jobs[id].deps) {
@@ -191,6 +219,8 @@ class DependencyGraph {
             return m_jobs.size();
         }
 
+        mutable std::mutex m_graph_mutex;
+        std::condition_variable m_graph_cv;
         std::vector<Job> m_jobs;
         std::vector<TaskID> m_topo_order;  // Pre-computed during insertion
 };

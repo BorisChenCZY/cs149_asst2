@@ -143,43 +143,42 @@ void TaskSystemParallelThreadPoolSleeping::worker_thread_function() {
         bool has_task = false;
         
         // Get task with minimal lock time
-        {
-            std::unique_lock<std::mutex> lock(queue_mutex);
-            queue_cv.wait(lock, [this] { return terminate || !ready_queue.empty(); });
+        std::unique_lock<std::mutex> lock(queue_mutex);
+        queue_cv.wait(lock, [this] { return terminate || !ready_queue.empty(); });
+        
+        // ! BUG 从ready queue里面删除launch的时机不好把控，此处有bug - chenhzhu 10/14/2025
+        auto task_iter = std::find_if(ready_queue.begin(), ready_queue.end(), [](TaskLaunch* t) { return t->curr_task_id < t->total_tasks; });
+        if (!terminate && task_iter != ready_queue.end()) {
             
-            // ! BUG 从ready queue里面删除launch的时机不好把控，此处有bug - chenhzhu 10/14/2025
-            if (!terminate && !ready_queue.empty()) {
-                task = ready_queue.front();
-                task->num_completed_tasks++;
-                if (task->num_completed_tasks == task->total_tasks) {
-                    ready_queue.pop();
-                }
-                has_task = true;
-            }
+            task = *task_iter;
+            has_task = true;
         }
+
         
         // Execute task
         bool should_notify_sync = false;
         if (has_task) {
             int cur_task_id = task->curr_task_id++;
+            lock.unlock();
             task->runnable->runTask(cur_task_id, task->total_tasks);
             
-            // Process completion
-            // process_task_completion(task->launch_id);
             // 检查这个launch是否完成，如果完成了则更新他的后继的lanuch的depent_to vector
-            {
-                std::lock_guard<std::mutex> lock(queue_mutex);
-                if (task->curr_task_id == task->total_tasks) {
-                    completed_launch_ids.insert(task->launch_id);
-                    for (TaskID successor : task->successors) {
-                        launch_id_map[successor].num_depends--;
-                        if (launch_id_map[successor].num_depends == 0) {
-                            ready_queue.push(&launch_id_map[successor]);
-                        }
+            lock.lock();
+            task->num_completed_tasks++;
+            if (task->num_completed_tasks == task->total_tasks) {
+                ready_queue.erase(task_iter);
+                completed_launch_ids.insert(task->launch_id);
+                for (TaskID successor : task->successors) {
+                    launch_id_map[successor].num_depends--;
+                    if (launch_id_map[successor].num_depends == 0) {
+                        ready_queue.push_back(&launch_id_map[successor]);
                     }
                 }
-                should_notify_sync = (ready_queue.empty());
             }
+
+            lock.unlock();
+            should_notify_sync = (ready_queue.empty());
+            
             if (should_notify_sync) {
                 completed_cv.notify_all();
             }
@@ -263,7 +262,7 @@ TaskID TaskSystemParallelThreadPoolSleeping::runAsyncWithDeps(IRunnable* runnabl
         }
     }
     if (task_ptr->num_depends == 0) {
-        ready_queue.push(task_ptr);
+        ready_queue.push_back(task_ptr);
     }
 
 

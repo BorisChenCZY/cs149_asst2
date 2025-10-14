@@ -11,6 +11,8 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
+#include <deque>
+#include <algorithm>
 
 template <typename ...Args>
 inline void debug_print(const char* msg, Args... args) {
@@ -166,7 +168,7 @@ class TaskSystemParallelThreadPoolSleeping: public ITaskSystem {
         
         // 全局依赖管理
         std::unordered_map<TaskID, TaskLaunch> launch_id_map;        // 现在变成launchID对TaskLaunch的对应map了 --- 依赖关系DAG: dep_id -> [dependent_launches_ids]
-        std::queue<TaskLaunch*> ready_queue;                     // 可执行任务队列
+        std::deque<TaskLaunch*> ready_queue;                     // 可执行任务队列
         
         // 任务状态跟踪
         std::unordered_set<TaskID> completed_launch_ids;             // 已完成任务
@@ -180,8 +182,6 @@ class TaskSystemParallelThreadPoolSleeping: public ITaskSystem {
         
         // Helper methods
         void worker_thread_function();                          // 工作线程函数
-        // void process_task_completion(TaskID completed_launch_id);     // 处理任务完成
-        // bool all_dependencies_satisfied(TaskID task_id);        // 检查所有依赖是否满足
 };
 
 #endif

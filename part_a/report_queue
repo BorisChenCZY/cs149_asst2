@@ -1,0 +1,112 @@
+runtasks_ref
+Linux aarch64
+================================================================================
+Running task system grading harness... (11 total tests)
+  - Detected CPU with 16 execution contexts
+  - Task system configured to use at most 16 threads
+================================================================================
+================================================================================
+Executing test: super_super_light...
+Reference binary: ./runtasks_ref_linux_arm
+Results for: super_super_light
+                                        STUDENT   REFERENCE   PERF?
+[Serial]                                10.492    10.262      1.02  (OK)
+[Parallel + Always Spawn]               145.394   144.589     1.01  (OK)
+[Parallel + Thread Pool + Spin]         14.198    24.802      0.57  (OK)
+[Parallel + Thread Pool + Sleep]        15.328    12.866      1.19  (OK)
+================================================================================
+Executing test: super_light...
+Reference binary: ./runtasks_ref_linux_arm
+Results for: super_light
+                                        STUDENT   REFERENCE   PERF?
+[Serial]                                87.958    87.976      1.00  (OK)
+[Parallel + Always Spawn]               146.274   146.848     1.00  (OK)
+[Parallel + Thread Pool + Spin]         15.56     25.473      0.61  (OK)
+[Parallel + Thread Pool + Sleep]        14.926    16.819      0.89  (OK)
+================================================================================
+Executing test: ping_pong_equal...
+Reference binary: ./runtasks_ref_linux_arm
+Results for: ping_pong_equal
+                                        STUDENT   REFERENCE   PERF?
+[Serial]                                1409.788  1409.552    1.00  (OK)
+[Parallel + Always Spawn]               194.602   193.277     1.01  (OK)
+[Parallel + Thread Pool + Spin]         115.258   122.985     0.94  (OK)
+[Parallel + Thread Pool + Sleep]        97.249    110.118     0.88  (OK)
+================================================================================
+Executing test: ping_pong_unequal...
+Reference binary: ./runtasks_ref_linux_arm
+Results for: ping_pong_unequal
+                                        STUDENT   REFERENCE   PERF?
+[Serial]                                1623.356  1623.878    1.00  (OK)
+[Parallel + Always Spawn]               208.295   208.901     1.00  (OK)
+[Parallel + Thread Pool + Spin]         122.683   131.252     0.93  (OK)
+[Parallel + Thread Pool + Sleep]        109.528   118.218     0.93  (OK)
+================================================================================
+Executing test: recursive_fibonacci...
+Reference binary: ./runtasks_ref_linux_arm
+Results for: recursive_fibonacci
+                                        STUDENT   REFERENCE   PERF?
+[Serial]                                1072.258  1073.062    1.00  (OK)
+[Parallel + Always Spawn]               75.873    75.901      1.00  (OK)
+[Parallel + Thread Pool + Spin]         73.208    75.673      0.97  (OK)
+[Parallel + Thread Pool + Sleep]        68.097    70.857      0.96  (OK)
+================================================================================
+Executing test: math_operations_in_tight_for_loop...
+Reference binary: ./runtasks_ref_linux_arm
+Results for: math_operations_in_tight_for_loop
+                                        STUDENT   REFERENCE   PERF?
+[Serial]                                540.252   540.273     1.00  (OK)
+[Parallel + Always Spawn]               736.509   727.333     1.01  (OK)
+[Parallel + Thread Pool + Spin]         82.949    122.948     0.67  (OK)
+[Parallel + Thread Pool + Sleep]        81.935    94.262      0.87  (OK)
+================================================================================
+Executing test: math_operations_in_tight_for_loop_fewer_tasks...
+Reference binary: ./runtasks_ref_linux_arm
+Results for: math_operations_in_tight_for_loop_fewer_tasks
+                                        STUDENT   REFERENCE   PERF?
+[Serial]                                540.021   539.918     1.00  (OK)
+[Parallel + Always Spawn]               736.841   732.671     1.01  (OK)
+[Parallel + Thread Pool + Spin]         85.378    121.443     0.70  (OK)
+[Parallel + Thread Pool + Sleep]        109.113   111.918     0.97  (OK)
+================================================================================
+Executing test: math_operations_in_tight_for_loop_fan_in...
+Reference binary: ./runtasks_ref_linux_arm
+Results for: math_operations_in_tight_for_loop_fan_in
+                                        STUDENT   REFERENCE   PERF?
+[Serial]                                277.192   277.166     1.00  (OK)
+[Parallel + Always Spawn]               96.281    97.509      0.99  (OK)
+[Parallel + Thread Pool + Spin]         25.778    33.074      0.78  (OK)
+[Parallel + Thread Pool + Sleep]        24.129    26.77       0.90  (OK)
+================================================================================
+Executing test: math_operations_in_tight_for_loop_reduction_tree...
+Reference binary: ./runtasks_ref_linux_arm
+Results for: math_operations_in_tight_for_loop_reduction_tree
+                                        STUDENT   REFERENCE   PERF?
+[Serial]                                276.242   276.508     1.00  (OK)
+[Parallel + Always Spawn]               37.24     37.752      0.99  (OK)
+[Parallel + Thread Pool + Spin]         22.593    23.287      0.97  (OK)
+[Parallel + Thread Pool + Sleep]        18.972    22.641      0.84  (OK)
+================================================================================
+Executing test: spin_between_run_calls...
+Reference binary: ./runtasks_ref_linux_arm
+Results for: spin_between_run_calls
+                                        STUDENT   REFERENCE   PERF?
+[Serial]                                385.466   385.699     1.00  (OK)
+[Parallel + Always Spawn]               193.611   193.758     1.00  (OK)
+[Parallel + Thread Pool + Spin]         193.017   193.036     1.00  (OK)
+[Parallel + Thread Pool + Sleep]        193.044   192.958     1.00  (OK)
+================================================================================
+Executing test: mandelbrot_chunked...
+Reference binary: ./runtasks_ref_linux_arm
+Results for: mandelbrot_chunked
+                                        STUDENT   REFERENCE   PERF?
+[Serial]                                411.645   410.647     1.00  (OK)
+[Parallel + Always Spawn]               26.127    26.108      1.00  (OK)
+[Parallel + Thread Pool + Spin]         28.981    28.947      1.00  (OK)
+[Parallel + Thread Pool + Sleep]        25.901    25.852      1.00  (OK)
+================================================================================
+Overall performance results
+[Serial]                                : All passed Perf
+[Parallel + Always Spawn]               : All passed Perf
+[Parallel + Thread Pool + Spin]         : All passed Perf
+[Parallel + Thread Pool + Sleep]        : All passed Perf

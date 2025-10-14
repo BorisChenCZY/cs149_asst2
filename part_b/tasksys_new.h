@@ -12,14 +12,11 @@
 #include <vector>
 
 /*
- * A lean Part B implementation inspired by Lfalive's approach but adapted
- * to our Part A thread-pool style. It uses:
- *  - Per-launch remaining dependency count (remainingDeps)
- *  - Reverse edges (dependents) to unlock children immediately when a parent finishes
- *  - A single global ready task queue consumed by sleeping worker threads
+ * TaskSystemParallelThreadPoolSleeping: Optimized implementation inspired by Lfalive's approach.
+ * Uses remaining dependency count + reverse edges for efficient task scheduling.
  */
 
-struct TSN_TaskGroup {
+struct TaskGroup {
     TaskID id;
     IRunnable* runnable;
     int numTotalTasks;
@@ -27,15 +24,15 @@ struct TSN_TaskGroup {
     std::atomic<int> remainingDeps{0};
     std::vector<TaskID> dependents; // children launches
 
-    TSN_TaskGroup(TaskID id_, IRunnable* r, int n, int deps)
+    TaskGroup(TaskID id_, IRunnable* r, int n, int deps)
         : id(id_), runnable(r), numTotalTasks(n) {
         tasksRemaining.store(n);
         remainingDeps.store(deps);
     }
 };
 
-struct TSN_Task {
-    std::shared_ptr<TSN_TaskGroup> group;
+struct RunnableTask {
+    std::shared_ptr<TaskGroup> group;
     int taskId;
 };
 
@@ -51,24 +48,24 @@ public:
 
 private:
     // worker pool
-    std::vector<std::thread> workers_;
-    std::atomic<bool> stop_{false};
+    std::vector<std::thread> workers;
+    std::atomic<bool> stop{false};
 
     // global scheduling state
-    std::mutex mtx_;
-    std::condition_variable cvTasks_;
-    std::queue<TSN_Task> readyTasks_;
+    std::mutex queueMutex;
+    std::condition_variable queueCond;
+    std::queue<RunnableTask> readyTasks;
 
-    std::unordered_map<TaskID, std::shared_ptr<TSN_TaskGroup>> groups_;
-    std::unordered_map<TaskID, std::vector<TaskID>> pendingDependents_; // when parent not yet created
+    std::unordered_map<TaskID, std::shared_ptr<TaskGroup>> groups;
+    std::unordered_map<TaskID, std::vector<TaskID>> pendingDependents;
 
-    std::atomic<TaskID> nextId_{1};
-    std::atomic<int> pendingLaunches_{0};
-    std::condition_variable cvAllDone_;
-    std::mutex mtxAllDone_;
+    std::atomic<TaskID> nextId{1};
+    std::atomic<int> pendingLaunches{0};
+    std::condition_variable allDoneCond;
+    std::mutex allDoneMutex;
 
     void workerLoop();
-    void enqueueGroupTasksLocked(const std::shared_ptr<TSN_TaskGroup>& g);
+    void enqueueGroupTasksLocked(const std::shared_ptr<TaskGroup>& g);
 };
 
 #endif

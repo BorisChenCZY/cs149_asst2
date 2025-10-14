@@ -37,24 +37,19 @@ class TaskSystemSerial: public ITaskSystem {
         void sync();
 };
 
-// Task structure for Part B
-struct Task {
-    IRunnable* runnable;
-    int task_id;
-    int num_total_tasks;
-    TaskID launch_id;  // Which bulk launch this task belongs to
-};
-
-// Task launch information
-struct TaskLaunch {
+// TaskBulk structure for Part B - Orange's implementation
+struct TaskBulk {
     TaskID id;
     IRunnable* runnable;
-    int num_total_tasks;
-    std::vector<TaskID> dependencies;
-    std::atomic<int> remainingDeps{0};
-    std::vector<TaskID> dependents;
-    std::atomic<int> completed_tasks{0};
-    std::atomic<bool> is_complete{false};
+    int num_total_tasks = 0;
+    int num_tasks_done = 0;
+    int next_task_id = 0;
+    std::unordered_set<TaskID> dependencies;
+    std::mutex bulk_mtx;
+    
+    TaskBulk(TaskID _id, IRunnable* _runnable, int _num_total_tasks, const std::vector<TaskID>& _deps) 
+        : id(_id), runnable(_runnable), num_total_tasks(_num_total_tasks), 
+          dependencies(_deps.begin(), _deps.end()) {}
 };
 
 class Runtime {
@@ -153,33 +148,23 @@ class TaskSystemParallelThreadPoolSleeping: public ITaskSystem {
         void sync();
 
     private:
-        // Part A members (from your teammate's implementation)
-        Runtime m_runtime;
-        std::vector<std::thread> m_threads;
-        std::atomic<bool> m_done{false};
-        std::mutex m_completed_mutex;
-        std::condition_variable m_completed_cv;
-        int m_max_threads = 0;
-
-        // Part B members for async task execution and dependencies
-        std::atomic<TaskID> m_next_task_id{1};  // Start from 1, 0 reserved for invalid
+        int num_threads;
+        TaskID next_id;                        // 主线程读写，子线程会多次读(确认所有任务完成时)，不需要加锁
+        bool done;                             // 所有任务完成，主/子线程据此休眠
+        bool terminate;                       
+        std::atomic<int> num_bulk_done;        // 多个线程更新
+        std::thread* thread_pool;              
+        std::vector<TaskBulk*> waiting;        
+        std::vector<TaskBulk*> ready;          
+        std::unordered_set<TaskBulk*> all_bulks;  // 用于析构
+        std::unordered_set<TaskID> finished_bulk; // 用于依赖关系判断
+        std::condition_variable sleeping_cv;
+        std::condition_variable waiting_cv;
+        std::mutex qmtx;                       // 队列的锁
+        std::mutex cmtx;                       // 读写done的锁，用于两个条件变量
         
-        // Simplified task management
-        std::mutex m_task_mutex;
-        std::queue<Task> m_ready_queue;  // Tasks ready to execute
-        std::condition_variable m_task_cv;  // Signal when tasks are available
-        
-        // Simplified dependency tracking
-        std::unordered_map<TaskID, std::shared_ptr<TaskLaunch>> m_task_launches;
-        std::unordered_map<TaskID, std::unordered_set<TaskID>> m_dependents;  // Which launches depend on this one (legacy)
-        
-        // Sync tracking
-        std::atomic<int> m_pending_launches{0};  // Number of launches not yet complete
-        
-        // Helper methods
-        bool are_dependencies_satisfied(const std::vector<TaskID>& deps);
-        void move_ready_tasks_to_queue(TaskID completed_launch_id);
-        void worker_thread_function();
+        void ThreadFunc();
+        void CheckWaiting();
 };
 
 #endif

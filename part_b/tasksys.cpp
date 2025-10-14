@@ -135,121 +135,173 @@ const char* TaskSystemParallelThreadPoolSleeping::name() {
     return "Parallel + Thread Pool + Sleep";
 }
 
+
+// Helper method implementations
+void TaskSystemParallelThreadPoolSleeping::worker_thread_function() {
+    while (!terminate) {
+        TaskLaunch* task = nullptr;
+        bool has_task = false;
+        
+        // Get task with minimal lock time
+        {
+            std::unique_lock<std::mutex> lock(queue_mutex);
+            queue_cv.wait(lock, [this] { return terminate || !ready_queue.empty(); });
+            
+            if (!terminate && !ready_queue.empty()) {
+                task = ready_queue.front();
+                ready_queue.pop();
+                has_task = true;
+            }
+        }
+        
+        // Execute task
+        if (has_task) {
+            task->runnable->runTask(task->task_index, task->total_tasks);
+            
+            // Process completion
+            process_task_completion(task->task_id);
+        }
+    }
+}
+
 TaskSystemParallelThreadPoolSleeping::TaskSystemParallelThreadPoolSleeping(int num_threads): ITaskSystem(num_threads) {
-    workers_.reserve(num_threads);
-    for (int i = 0; i < num_threads; ++i) {
-        workers_.emplace_back(&TaskSystemParallelThreadPoolSleeping::workerLoop, this);
+    //
+    // TODO: CS149 student implementations may decide to perform setup
+    // operations (such as thread pool construction) here.
+    // Implementations are free to add new class member variables
+    // (requiring changes to tasksys.h).
+    //
+    
+    this->num_threads = num_threads;
+    terminate = false;
+    // pending_tasks = 0;
+    
+    // Create worker threads
+    for (int i = 0; i < num_threads; i++) {
+        threads.emplace_back(&TaskSystemParallelThreadPoolSleeping::worker_thread_function, this);
     }
 }
 
 TaskSystemParallelThreadPoolSleeping::~TaskSystemParallelThreadPoolSleeping() {
-    stop_.store(true);
-    cvTasks_.notify_all();
-    for (auto& t : workers_) t.join();
-}
-
-void TaskSystemParallelThreadPoolSleeping::enqueueGroupTasksLocked(const std::shared_ptr<TSN_TaskGroup>& g) {
-    bool wasEmpty = readyTasks_.empty();
-    for (int i = 0; i < g->numTotalTasks; ++i) {
-        readyTasks_.push(TSN_Task{g, i});
-    }
-    if (wasEmpty) cvTasks_.notify_all();
-}
-
-void TaskSystemParallelThreadPoolSleeping::workerLoop() {
-    while (!stop_.load()) {
-        TSN_Task t{};
-        bool has = false;
-        {
-            std::unique_lock<std::mutex> lk(mtx_);
-            cvTasks_.wait(lk, [&]{ return stop_.load() || !readyTasks_.empty(); });
-            if (stop_.load()) break;
-            if (!readyTasks_.empty()) {
-                t = readyTasks_.front();
-                readyTasks_.pop();
-                has = true;
-            }
-        }
-        if (!has) continue;
-
-        // run task
-        t.group->runnable->runTask(t.taskId, t.group->numTotalTasks);
-
-        // completion bookkeeping
-        bool notifyAllDone = false;
-        std::vector<std::shared_ptr<TSN_TaskGroup>> toEnqueue;
-        {
-            std::lock_guard<std::mutex> lk(mtx_);
-            int left = t.group->tasksRemaining.fetch_sub(1) - 1;
-            if (left == 0) {
-                // this group finished: unlock dependents
-                for (TaskID childId : t.group->dependents) {
-                    auto itc = groups_.find(childId);
-                    if (itc != groups_.end()) {
-                        int r = itc->second->remainingDeps.fetch_sub(1) - 1;
-                        if (r == 0) {
-                            toEnqueue.push_back(itc->second);
-                        }
-                    }
-                }
-                // one launch done
-                int pend = pendingLaunches_.fetch_sub(1) - 1;
-                if (pend == 0) notifyAllDone = true;
-            }
-        }
-        if (!toEnqueue.empty()) {
-            std::lock_guard<std::mutex> lk(mtx_);
-            for (auto& g : toEnqueue) enqueueGroupTasksLocked(g);
-        }
-        if (notifyAllDone) {
-            std::lock_guard<std::mutex> lk(mtxAllDone_);
-            cvAllDone_.notify_all();
-        }
+    //
+    // TODO: CS149 student implementations may decide to perform cleanup
+    // operations (such as thread pool shutdown construction) here.
+    // Implementations are free to add new class member variables
+    // (requiring changes to tasksys.h).
+    //
+    
+    // // Wait for all tasks to complete
+    // sync(); No need to sync() here, the sync() is called by user
+    
+    // Signal all threads to stop
+    terminate = true;
+    queue_cv.notify_all();
+    
+    // Wait for all threads to finish
+    for (auto &t: threads) {
+        t.join();
     }
 }
 
 void TaskSystemParallelThreadPoolSleeping::run(IRunnable* runnable, int num_total_tasks) {
-    std::vector<TaskID> none;
-    runAsyncWithDeps(runnable, num_total_tasks, none);
+    //
+    // DONE: CS149 students will modify the implementation of this
+    // method in Parts A and B.  The implementation provided below runs all
+    // tasks sequentially on the calling thread.
+    //
+    
+    // Use runAsyncWithDeps with no dependencies, then sync
+    std::vector<TaskID> no_deps;
+    runAsyncWithDeps(runnable, num_total_tasks, no_deps);
     sync();
 }
 
 TaskID TaskSystemParallelThreadPoolSleeping::runAsyncWithDeps(IRunnable* runnable, int num_total_tasks,
-                            const std::vector<TaskID>& deps) {
-    TaskID id = nextId_.fetch_add(1);
-    auto g = std::make_shared<TSN_TaskGroup>(id, runnable, num_total_tasks, (int)deps.size());
-
-    {
-        std::lock_guard<std::mutex> lk(mtx_);
-        groups_[id] = g;
-        pendingLaunches_.fetch_add(1);
-
-        // register dependents
-        for (TaskID d : deps) {
-            auto it = groups_.find(d);
-            if (it != groups_.end()) it->second->dependents.push_back(id);
-            else pendingDependents_[d].push_back(id);
+                                                    const std::vector<TaskID>& deps) {
+    //
+    // TODO: CS149 students will implement this method in Part B.
+    //
+    
+    TaskID launch_id = next_launch_id.fetch_add(1);
+    
+    std::lock_guard<std::mutex> lock(queue_mutex);
+    
+    // 为每个任务创建TaskInfo对象
+    TaskLaunch task = TaskLaunch(launch_id, runnable, 0, num_total_tasks, deps, 0, 0);
+    for (int i = 0; i < num_total_tasks; i++) {
+        std::vector<TaskID> dependents;  // 暂时为空，后续会被填充
+        
+        task.dependents.push_back(launch_id);
+        // 构建依赖关系：每个依赖都指向当前任务
+        for (TaskID dep_id : deps) {
+            wait_map[dep_id].dependents.push_back(task_id);
         }
-
-        // migrate pending dependents for this newly created group (as parent)
-        auto pend = pendingDependents_.find(id);
-        if (pend != pendingDependents_.end()) {
-            // id is a parent; attach its pending children
-            // Note: this migration is useful only if some child arrived before parent
-            // We attach to this group's dependents so when this group completes, children unlock
-            for (TaskID child : pend->second) g->dependents.push_back(child);
-            pendingDependents_.erase(pend);
-        }
-
-        if (g->remainingDeps.load() == 0) {
-            enqueueGroupTasksLocked(g);
+        
+        // 无依赖任务直接入ready queue
+        if (deps.empty()) {
+            ready_queue.push(task);
         }
     }
-
-    return id;
+    
+    // 通知工作线程
+    queue_cv.notify_all();
+    
+    return launch_id;
 }
 
 void TaskSystemParallelThreadPoolSleeping::sync() {
-    std::unique_lock<std::mutex> lk(mtxAllDone_);
-    cvAllDone_.wait(lk, [&]{ return pendingLaunches_.load() == 0; });
+    //
+    // TODO: CS149 students will modify the implementation of this method in Part B.
+    //
+    
+    // Wait until all tasks are complete
+    std::unique_lock<std::mutex> lock(queue_mutex);
+    queue_cv.wait(lock, [this] { return pending_tasks.load() == 0; });
+}
+
+
+
+void TaskSystemParallelThreadPoolSleeping::process_task_completion(TaskID completed_task_id) {
+    std::lock_guard<std::mutex> lock(queue_mutex);
+    
+    // 标记任务完成
+    completed_tasks.insert(completed_task_id);
+    pending_tasks--;
+    
+    // 检查依赖此任务的其他任务
+    auto it = wait_map.find(completed_task_id);
+    if (it != wait_map.end()) {
+        for (TaskID dependent_task_id : it->second) {
+            // 检查dependent_task的所有依赖是否都完成
+            if (all_dependencies_satisfied(dependent_task_id)) {
+                ready_queue.push(all_tasks[dependent_task_id]);
+            }
+        }
+        wait_map.erase(it);  // 清理已处理的依赖
+    }
+    
+    // 通知等待的线程
+    queue_cv.notify_all();
+}
+
+bool TaskSystemParallelThreadPoolSleeping::all_dependencies_satisfied(TaskID task_id) {
+    auto task_it = all_tasks.find(task_id);
+    if (task_it == all_tasks.end()) {
+        return false;
+    }
+    
+    // 检查该任务的所有依赖是否都已完成
+    // 这里需要从wait_map中反向查找该任务的依赖
+    for (const auto& pair : wait_map) {
+        for (TaskID dependent_id : pair.second) {
+            if (dependent_id == task_id) {
+                // 如果该任务还在wait_map中，说明还有未完成的依赖
+                if (completed_tasks.find(pair.first) == completed_tasks.end()) {
+                    return false;
+                }
+            }
+        }
+    }
+    
+    return true;
 }

@@ -37,6 +37,28 @@ class TaskSystemSerial: public ITaskSystem {
         void sync();
 };
 
+// Task structure for Part B
+struct Task {
+    IRunnable* runnable;
+    int task_id;
+    int num_total_tasks;
+    TaskLaunch* launch_ptr;  // Which bulk launch this task belongs to
+};
+
+// Task launch information
+struct TaskLaunch {
+    int launch_id;
+    IRunnable* runnable;
+    int num_total_tasks {0};
+    std::unordered_set<TaskID> dependencies;
+    std::atomic<int> remaining_deps{0};
+    std::atomic<int> num_completed_tasks{0};
+    std::atomic<bool> is_complete{false};
+
+    bool operator<(const TaskLaunch& other) const {
+        return dependencies.size() > other.dependencies.size();
+    }
+};
 
 class Runtime {
 public:
@@ -123,25 +145,6 @@ class TaskSystemParallelThreadPoolSpinning: public ITaskSystem {
  * a thread pool. See definition of ITaskSystem in
  * itasksys.h for documentation of the ITaskSystem interface.
  */
-
-struct TaskLaunch {
-    TaskID launch_id;
-    IRunnable* runnable;
-    int task_index;
-    int total_tasks;
-    int num_completed_tasks;
-    int num_deps;
-    std::vector<TaskID> dependents;  // 被谁依赖
-    
-    // Default constructor
-    TaskLaunch() : launch_id(0), runnable(nullptr), task_index(0), total_tasks(0), num_completed_tasks(0), num_deps(0), dependents(std::vector<TaskID>()) {}
-    
-    // Parameterized constructor
-    TaskLaunch(TaskID launch_id, IRunnable* runnable, int task_index, int total_tasks, std::vector<TaskID> dependents, int num_completed_tasks, int num_deps) 
-        : launch_id(launch_id), runnable(runnable), task_index(task_index), total_tasks(total_tasks), dependents(dependents), num_completed_tasks(num_completed_tasks), num_deps(num_deps) {}
-};
-
-
 class TaskSystemParallelThreadPoolSleeping: public ITaskSystem {
     public:
         TaskSystemParallelThreadPoolSleeping(int num_threads);
@@ -153,31 +156,36 @@ class TaskSystemParallelThreadPoolSleeping: public ITaskSystem {
         void sync();
 
     private:
-        // 线程管理
-        int num_threads;
-        std::vector<std::thread> threads;
-        std::atomic<bool> terminate{false};
-        std::atomic<TaskID> next_launch_id{0};  // 从0开始，0表示无效，1表示第一个Launch，一个launch有多个task
+        // Part A members (from your teammate's implementation)
+        Runtime m_runtime;
+        std::vector<std::thread> m_threads;
+        std::atomic<bool> m_done{false};
+        std::mutex m_completed_mutex;
+        std::condition_variable m_completed_cv;
+        int m_max_threads = 0;
+
+        // Part B members for async task execution and dependencies
+        std::atomic<TaskID> m_next_task_id{1};  // Start from 1, 0 reserved for invalid
         
-        // 全局依赖管理
-        std::unordered_map<TaskID, TaskLaunch> wait_map;  // 依赖关系DAG: dep_id -> [dependent_task_ids]
-        std::queue<TaskLaunch*> ready_queue;                          // 可执行任务队列
+        // Simplified task management
+        std::mutex m_task_mutex;
+        std::queue<Task> m_ready_queue;  // Tasks ready to execute
+        std::condition_variable m_task_cv;  // Signal when tasks are available
+
+        std::priority_queue<TaskLaunch*> m_launch_queue;
+        std::mutex m_launch_mutex;
         
-        // 任务状态跟踪
-        std::unordered_set<TaskID> completed_tasks;                // 已完成任务
-        // std::unordered_map<TaskID, TaskLaunch> all_tasks;            // 所有任务
+        // Simplified dependency tracking
+        std::unordered_map<TaskID, TaskLaunch*> m_task_launches;
+        std::unordered_set<TaskLaunch*> m_all_launches;
         
-        // 同步机制
-        std::mutex queue_mutex;                                    // 保护队列和依赖关系
-        std::mutex completed_mutex;                                // 保护已完成任务
-        std::condition_variable queue_cv;       
-        std::condition_variable completed_cv;                      // 任务可用时通知
-        // std::atomic<int> pending_tasks{0};                         // 待完成任务数
+        // Sync tracking
+        std::atomic<int> m_pending_launches{0};  // Number of launches not yet complete
         
         // Helper methods
-        void worker_thread_function();                               // 工作线程函数
-        void process_task_completion(TaskID completed_task_id);     // 处理任务完成
-        bool all_dependencies_satisfied(TaskID task_id);            // 检查所有依赖是否满足
+        bool are_dependencies_satisfied(const std::vector<TaskID>& deps);
+        void move_ready_tasks_to_queue(TaskID completed_launch_id);
+        void worker_thread_function();
 };
 
 #endif

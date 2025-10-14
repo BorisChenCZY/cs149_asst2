@@ -151,6 +151,8 @@ TaskSystemParallelThreadPoolSleeping::TaskSystemParallelThreadPoolSleeping(int n
                     m_completed_cv.notify_all();
                 }
             }
+
+            std::this_thread::yield();
         }
     };
 
@@ -202,9 +204,7 @@ TaskID TaskSystemParallelThreadPoolSleeping::runAsyncWithDeps(IRunnable* runnabl
     // TODO: CS149 students will implement this method in Part B.
     //
 
-    m_dep_graph.add_job(runnable, num_total_tasks, deps);
-
-    return 0;
+    return m_dep_graph.add_job(runnable, num_total_tasks, deps);
 }
 
 void TaskSystemParallelThreadPoolSleeping::sync() {
@@ -240,6 +240,7 @@ void TaskSystemParallelThreadPoolSleeping::sync() {
         if (ready_jobs.empty()) {
             // No jobs ready but not all completed - shouldn't happen unless there's a cycle
             debug_print("ERROR: No ready jobs but %zu jobs remain\n", total_jobs - jobs_completed);
+            assert(false);
             break;
         }
 

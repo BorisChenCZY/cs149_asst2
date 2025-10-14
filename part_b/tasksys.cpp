@@ -149,11 +149,12 @@ void TaskSystemParallelThreadPoolSleeping::worker_thread_function() {
         // ! BUG 从ready queue里面删除launch的时机不好把控，此处有bug - chenhzhu 10/14/2025
         auto task_iter = std::find_if(ready_queue.begin(), ready_queue.end(), [](TaskLaunch* t) { return t->curr_task_id < t->total_tasks; });
         if (!terminate && task_iter != ready_queue.end()) {
+        // if (!terminate && !ready_queue.empty()) {
             
             task = *task_iter;
+            // task = ready_queue.front();
             has_task = true;
         }
-
         
         // Execute task
         bool should_notify_sync = false;
@@ -178,6 +179,7 @@ void TaskSystemParallelThreadPoolSleeping::worker_thread_function() {
 
             lock.unlock();
             should_notify_sync = (ready_queue.empty());
+            // should_notify_sync = (completed_launch_ids.size() == launch_id_map.size());
             
             if (should_notify_sync) {
                 completed_cv.notify_all();
@@ -248,7 +250,7 @@ TaskID TaskSystemParallelThreadPoolSleeping::runAsyncWithDeps(IRunnable* runnabl
      // 为每个任务创建TaskLaunch对象
     // 在 map 中创建/放置该 launch 的对象，获取其稳定地址
     std::pair<std::unordered_map<TaskID, TaskLaunch>::iterator, bool> emplace_result =
-        launch_id_map.emplace(launch_id, TaskLaunch(launch_id, runnable, 0, num_total_tasks, 0, 0, {}));
+        launch_id_map.emplace(launch_id, TaskLaunch(launch_id, runnable, 0, num_total_tasks, 0, 0, num_total_tasks, {}));
     TaskLaunch* task_ptr = &emplace_result.first->second;
     
 

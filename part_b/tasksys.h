@@ -133,15 +133,16 @@ struct TaskLaunch {
     int total_tasks;
     int num_completed_tasks;
     int num_depends; // 要依赖多少个之前的launch
+    int num_task_remaining; // 要执行多少个task
     std::vector<TaskID> successors; // 后继
     // std::vector<TaskID> depend_on;  // 依赖谁
     
     // Default constructor
-    TaskLaunch() : launch_id(0), runnable(nullptr), curr_task_id(0), total_tasks(0), num_completed_tasks(0), num_depends(0), successors(std::vector<TaskID>()) {}
+    TaskLaunch() : launch_id(0), runnable(nullptr), curr_task_id(0), total_tasks(0), num_completed_tasks(0), num_depends(0), num_task_remaining(0), successors(std::vector<TaskID>()) {}
     
     // Parameterized constructor
-    TaskLaunch(TaskID launch_id, IRunnable* runnable, int curr_task_id, int total_tasks, int num_completed_tasks, int num_depends, std::vector<TaskID> successors) 
-        : launch_id(launch_id), runnable(runnable), curr_task_id(curr_task_id), total_tasks(total_tasks), num_completed_tasks(num_completed_tasks), num_depends(num_depends), successors(successors) {}
+    TaskLaunch(TaskID launch_id, IRunnable* runnable, int curr_task_id, int total_tasks, int num_completed_tasks, int num_depends, int num_task_remaining, std::vector<TaskID> successors) 
+        : launch_id(launch_id), runnable(runnable), curr_task_id(curr_task_id), total_tasks(total_tasks), num_completed_tasks(num_completed_tasks), num_depends(num_depends), num_task_remaining(num_task_remaining), successors(successors) {}
 
     bool operator<(const TaskLaunch& other) const {
         return successors.size() > other.successors.size();
@@ -169,7 +170,8 @@ class TaskSystemParallelThreadPoolSleeping: public ITaskSystem {
         // 全局依赖管理
         std::unordered_map<TaskID, TaskLaunch> launch_id_map;        // 现在变成launchID对TaskLaunch的对应map了 --- 依赖关系DAG: dep_id -> [dependent_launches_ids]
         std::deque<TaskLaunch*> ready_queue;                     // 可执行任务队列
-        
+        // std::queue<TaskLaunch*> ready_queue;  
+
         // 任务状态跟踪
         std::unordered_set<TaskID> completed_launch_ids;             // 已完成任务
         

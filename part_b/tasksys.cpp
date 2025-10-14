@@ -133,6 +133,33 @@ TaskSystemParallelThreadPoolSleeping::TaskSystemParallelThreadPoolSleeping(int n
     // Implementations are free to add new class member variables
     // (requiring changes to tasksys.h).
     //
+
+    auto thread_run = [&](int thread_id) {
+        while (not m_done) {
+            int job = -1;
+            job = m_runtime.pop();
+
+            while (job != -1)
+            {
+                m_runtime.run(job);
+                m_runtime.add_complete();
+                job = m_runtime.pop();
+            }
+
+
+            // notify completed
+            {
+                if (m_runtime.is_all_complete()) {
+                    m_completed_cv.notify_all();
+                }
+            }
+        }
+    };
+
+    for (int i = 0; i < num_threads; i++) 
+    {
+        m_threads.emplace_back(thread_run, i);
+    }
 }
 
 TaskSystemParallelThreadPoolSleeping::~TaskSystemParallelThreadPoolSleeping() {
@@ -142,6 +169,11 @@ TaskSystemParallelThreadPoolSleeping::~TaskSystemParallelThreadPoolSleeping() {
     // Implementations are free to add new class member variables
     // (requiring changes to tasksys.h).
     //
+    m_done = true;
+    for (auto &t: m_threads)
+    {
+        t.join();
+    }
 }
 
 void TaskSystemParallelThreadPoolSleeping::run(IRunnable* runnable, int num_total_tasks) {
@@ -153,9 +185,15 @@ void TaskSystemParallelThreadPoolSleeping::run(IRunnable* runnable, int num_tota
     // tasks sequentially on the calling thread.
     //
 
-    for (int i = 0; i < num_total_tasks; i++) {
-        runnable->runTask(i, num_total_tasks);
+    debug_print("Main thread adding job with %d tasks\n", num_total_tasks);
+    m_runtime.add_job(runnable, num_total_tasks);
+    
+    {
+        std::unique_lock<std::mutex> lock(m_completed_mutex);
+        m_completed_cv.wait(lock, [&]{ return m_runtime.is_all_complete(); });
     }
+
+    debug_print("Main thread job finished\n");
 }
 
 TaskID TaskSystemParallelThreadPoolSleeping::runAsyncWithDeps(IRunnable* runnable, int num_total_tasks,
@@ -166,9 +204,7 @@ TaskID TaskSystemParallelThreadPoolSleeping::runAsyncWithDeps(IRunnable* runnabl
     // TODO: CS149 students will implement this method in Part B.
     //
 
-    for (int i = 0; i < num_total_tasks; i++) {
-        runnable->runTask(i, num_total_tasks);
-    }
+    m_dep_graph.add_job(runnable, num_total_tasks, deps);
 
     return 0;
 }
@@ -178,6 +214,20 @@ void TaskSystemParallelThreadPoolSleeping::sync() {
     //
     // TODO: CS149 students will modify the implementation of this method in Part B.
     //
+    for (auto& job: m_dep_graph.get_topology_sort())
+    {
+        debug_print("Main thread adding job with %d tasks\n", job.total_tasks);
+        m_runtime.add_job(job.runnable, job.total_tasks);
+        
+        {
+            std::unique_lock<std::mutex> lock(m_completed_mutex);
+            m_completed_cv.wait(lock, [&]{ return m_runtime.is_all_complete(); });
+        }
+
+        m_dep_graph.mark_completed(&job - &m_dep_graph.get_topology_sort()[0]);
+
+        debug_print("Main thread job %d finished\n", job.job_id);
+    }
 
     return;
 }

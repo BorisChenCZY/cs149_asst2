@@ -66,5 +66,10 @@ class ITaskSystem {
           runXXX calls are done.
          */
         virtual void sync() = 0;
+
+        int num_threads();
+
+    private:
+        int m_num_threads;
 };
 #endif

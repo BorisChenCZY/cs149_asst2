@@ -35,6 +35,9 @@ void TaskSystemSerial::run(IRunnable* runnable, int num_total_tasks) {
 TaskID TaskSystemSerial::runAsyncWithDeps(IRunnable* runnable, int num_total_tasks,
                                           const std::vector<TaskID>& deps) {
     // You do not need to implement this method.
+    for (int i = 0; i < num_total_tasks; i++) {
+        runnable->runTask(i, num_total_tasks);
+    }
     return 0;
 }
 
@@ -98,6 +101,9 @@ void TaskSystemParallelSpawn::run(IRunnable* runnable, int num_total_tasks) {
 TaskID TaskSystemParallelSpawn::runAsyncWithDeps(IRunnable* runnable, int num_total_tasks,
                                                  const std::vector<TaskID>& deps) {
     // You do not need to implement this method.
+    for (int i = 0; i < num_total_tasks; i++) {
+        runnable->runTask(i, num_total_tasks);
+    }
     return 0;
 }
 
@@ -150,6 +156,9 @@ void TaskSystemParallelThreadPoolSpinning::run(IRunnable* runnable, int num_tota
 TaskID TaskSystemParallelThreadPoolSpinning::runAsyncWithDeps(IRunnable* runnable, int num_total_tasks,
                                                               const std::vector<TaskID>& deps) {
     // You do not need to implement this method.
+    for (int i = 0; i < num_total_tasks; i++) {
+        runnable->runTask(i, num_total_tasks);
+    }
     return 0;
 }
 
@@ -217,20 +226,23 @@ void TaskSystemParallelThreadPoolSleeping::run(IRunnable* runnable, int num_tota
 
 TaskID TaskSystemParallelThreadPoolSleeping::runAsyncWithDeps(IRunnable* runnable, int num_total_tasks,
                                                     const std::vector<TaskID>& deps) {
+    // Add job with dependencies and get the job ID
+    TaskID job_id = m_runtime.add_job_with_deps(runnable, num_total_tasks, deps);
 
+    // Notify worker threads that new work may be available
+    m_runtime.notify_next();
 
-    //
-    // TODO: CS149 students will implement this method in Part B.
-    //
-
-    return 0;
+    return job_id;
 }
 
 void TaskSystemParallelThreadPoolSleeping::sync() {
+    // Wait until all jobs are complete
+    m_runtime.wait_all_jobs_complete();
 
-    //
-    // TODO: CS149 students will modify the implementation of this method in Part B.
-    //
+    // Clear jobs and set inactive
+    m_runtime.m_active = false;
+    m_runtime.clear_jobs();
+    m_runtime.clear_tasks();
 
-    return;
+    debug_print("Main thread: all jobs synced\n");
 }

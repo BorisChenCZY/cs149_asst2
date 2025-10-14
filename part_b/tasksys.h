@@ -127,18 +127,23 @@ class TaskSystemParallelThreadPoolSpinning: public ITaskSystem {
 struct TaskLaunch {
     TaskID launch_id;
     IRunnable* runnable;
-    int task_index;
+    int curr_task_id;
     int total_tasks;
     int num_completed_tasks;
-    int num_deps;
-    std::vector<TaskID> dependents;  // 被谁依赖
+    int num_depends; // 要依赖多少个之前的launch
+    std::vector<TaskID> successors; // 后继
+    // std::vector<TaskID> depend_on;  // 依赖谁
     
     // Default constructor
-    TaskLaunch() : launch_id(0), runnable(nullptr), task_index(0), total_tasks(0), num_completed_tasks(0), num_deps(0), dependents(std::vector<TaskID>()) {}
+    TaskLaunch() : launch_id(0), runnable(nullptr), curr_task_id(0), total_tasks(0), num_completed_tasks(0), num_depends(0), successors(std::vector<TaskID>()) {}
     
     // Parameterized constructor
-    TaskLaunch(TaskID launch_id, IRunnable* runnable, int task_index, int total_tasks, std::vector<TaskID> dependents, int num_completed_tasks, int num_deps) 
-        : launch_id(launch_id), runnable(runnable), task_index(task_index), total_tasks(total_tasks), dependents(dependents), num_completed_tasks(num_completed_tasks), num_deps(num_deps) {}
+    TaskLaunch(TaskID launch_id, IRunnable* runnable, int curr_task_id, int total_tasks, int num_completed_tasks, int num_depends, std::vector<TaskID> successors) 
+        : launch_id(launch_id), runnable(runnable), curr_task_id(curr_task_id), total_tasks(total_tasks), num_completed_tasks(num_completed_tasks), num_depends(num_depends), successors(successors) {}
+
+    bool operator<(const TaskLaunch& other) const {
+        return successors.size() > other.successors.size();
+    }
 };
 
 
@@ -160,24 +165,23 @@ class TaskSystemParallelThreadPoolSleeping: public ITaskSystem {
         std::atomic<TaskID> next_launch_id{0};  // 从0开始，0表示无效，1表示第一个Launch，一个launch有多个task
         
         // 全局依赖管理
-        std::unordered_map<TaskID, TaskLaunch> wait_map;  // 依赖关系DAG: dep_id -> [dependent_task_ids]
-        std::queue<TaskLaunch*> ready_queue;                          // 可执行任务队列
+        std::unordered_map<TaskID, TaskLaunch> launch_id_map;        // 现在变成launchID对TaskLaunch的对应map了 --- 依赖关系DAG: dep_id -> [dependent_launches_ids]
+        std::queue<TaskLaunch*> ready_queue;                     // 可执行任务队列
         
         // 任务状态跟踪
-        std::unordered_set<TaskID> completed_tasks;                // 已完成任务
-        // std::unordered_map<TaskID, TaskLaunch> all_tasks;            // 所有任务
+        std::unordered_set<TaskID> completed_launch_ids;             // 已完成任务
         
         // 同步机制
-        std::mutex queue_mutex;                                    // 保护队列和依赖关系
-        std::mutex completed_mutex;                                // 保护已完成任务
+        std::mutex queue_mutex;                                 // 保护队列和依赖关系
+        std::mutex completed_mutex;                             // 保护已完成任务
         std::condition_variable queue_cv;       
-        std::condition_variable completed_cv;                      // 任务可用时通知
-        // std::atomic<int> pending_tasks{0};                         // 待完成任务数
+        std::condition_variable completed_cv;                   // 任务可用时通知
+        // std::atomic<int> pending_tasks{0};                   // 待完成任务数
         
         // Helper methods
-        void worker_thread_function();                               // 工作线程函数
-        void process_task_completion(TaskID completed_task_id);     // 处理任务完成
-        bool all_dependencies_satisfied(TaskID task_id);            // 检查所有依赖是否满足
+        void worker_thread_function();                          // 工作线程函数
+        // void process_task_completion(TaskID completed_launch_id);     // 处理任务完成
+        // bool all_dependencies_satisfied(TaskID task_id);        // 检查所有依赖是否满足
 };
 
 #endif

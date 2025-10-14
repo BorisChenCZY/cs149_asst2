@@ -147,26 +147,49 @@ void TaskSystemParallelThreadPoolSleeping::worker_thread_function() {
             std::unique_lock<std::mutex> lock(queue_mutex);
             queue_cv.wait(lock, [this] { return terminate || !ready_queue.empty(); });
             
+            // ! BUG 从ready queue里面删除launch的时机不好把控，此处有bug - chenhzhu 10/14/2025
             if (!terminate && !ready_queue.empty()) {
                 task = ready_queue.front();
-                ready_queue.pop();
+                task->num_completed_tasks++;
+                if (task->num_completed_tasks == task->total_tasks) {
+                    ready_queue.pop();
+                }
                 has_task = true;
             }
         }
         
         // Execute task
+        bool should_notify_sync = false;
         if (has_task) {
-            task->runnable->runTask(task->task_index, task->total_tasks);
+            int cur_task_id = task->curr_task_id++;
+            task->runnable->runTask(cur_task_id, task->total_tasks);
             
             // Process completion
-            process_task_completion(task->task_id);
+            // process_task_completion(task->launch_id);
+            // 检查这个launch是否完成，如果完成了则更新他的后继的lanuch的depent_to vector
+            {
+                std::lock_guard<std::mutex> lock(queue_mutex);
+                if (task->curr_task_id == task->total_tasks) {
+                    completed_launch_ids.insert(task->launch_id);
+                    for (TaskID successor : task->successors) {
+                        launch_id_map[successor].num_depends--;
+                        if (launch_id_map[successor].num_depends == 0) {
+                            ready_queue.push(&launch_id_map[successor]);
+                        }
+                    }
+                }
+                should_notify_sync = (ready_queue.empty());
+            }
+            if (should_notify_sync) {
+                completed_cv.notify_all();
+            }
         }
     }
 }
 
 TaskSystemParallelThreadPoolSleeping::TaskSystemParallelThreadPoolSleeping(int num_threads): ITaskSystem(num_threads) {
     //
-    // TODO: CS149 student implementations may decide to perform setup
+    // DONE: CS149 student implementations may decide to perform setup
     // operations (such as thread pool construction) here.
     // Implementations are free to add new class member variables
     // (requiring changes to tasksys.h).
@@ -184,14 +207,11 @@ TaskSystemParallelThreadPoolSleeping::TaskSystemParallelThreadPoolSleeping(int n
 
 TaskSystemParallelThreadPoolSleeping::~TaskSystemParallelThreadPoolSleeping() {
     //
-    // TODO: CS149 student implementations may decide to perform cleanup
+    // DONE: CS149 student implementations may decide to perform cleanup
     // operations (such as thread pool shutdown construction) here.
     // Implementations are free to add new class member variables
     // (requiring changes to tasksys.h).
     //
-    
-    // // Wait for all tasks to complete
-    // sync(); No need to sync() here, the sync() is called by user
     
     // Signal all threads to stop
     terminate = true;
@@ -224,24 +244,30 @@ TaskID TaskSystemParallelThreadPoolSleeping::runAsyncWithDeps(IRunnable* runnabl
     
     TaskID launch_id = next_launch_id.fetch_add(1);
     
-    std::lock_guard<std::mutex> lock(queue_mutex);
+    std::unique_lock<std::mutex> lock(queue_mutex);
     
-    // 为每个任务创建TaskInfo对象
-    TaskLaunch task = TaskLaunch(launch_id, runnable, 0, num_total_tasks, deps, 0, 0);
-    for (int i = 0; i < num_total_tasks; i++) {
-        std::vector<TaskID> dependents;  // 暂时为空，后续会被填充
-        
-        task.dependents.push_back(launch_id);
-        // 构建依赖关系：每个依赖都指向当前任务
-        for (TaskID dep_id : deps) {
-            wait_map[dep_id].dependents.push_back(task_id);
-        }
-        
-        // 无依赖任务直接入ready queue
-        if (deps.empty()) {
-            ready_queue.push(task);
+     // 为每个任务创建TaskLaunch对象
+    // 在 map 中创建/放置该 launch 的对象，获取其稳定地址
+    std::pair<std::unordered_map<TaskID, TaskLaunch>::iterator, bool> emplace_result =
+        launch_id_map.emplace(launch_id, TaskLaunch(launch_id, runnable, 0, num_total_tasks, 0, 0, {}));
+    TaskLaunch* task_ptr = &emplace_result.first->second;
+    
+
+    // 检查是否已经已有依赖完成了，如果有把deps里面完成了的依赖过滤掉
+    for (TaskID dep_id : deps) {
+        if (completed_launch_ids.find(dep_id) == completed_launch_ids.end()) {
+            
+            task_ptr->num_depends++;
+            // 记录依赖 -> 后继 关系
+            launch_id_map[dep_id].successors.push_back(launch_id);
         }
     }
+    if (task_ptr->num_depends == 0) {
+        ready_queue.push(task_ptr);
+    }
+
+
+    lock.unlock();
     
     // 通知工作线程
     queue_cv.notify_all();
@@ -256,52 +282,5 @@ void TaskSystemParallelThreadPoolSleeping::sync() {
     
     // Wait until all tasks are complete
     std::unique_lock<std::mutex> lock(queue_mutex);
-    queue_cv.wait(lock, [this] { return pending_tasks.load() == 0; });
-}
-
-
-
-void TaskSystemParallelThreadPoolSleeping::process_task_completion(TaskID completed_task_id) {
-    std::lock_guard<std::mutex> lock(queue_mutex);
-    
-    // 标记任务完成
-    completed_tasks.insert(completed_task_id);
-    pending_tasks--;
-    
-    // 检查依赖此任务的其他任务
-    auto it = wait_map.find(completed_task_id);
-    if (it != wait_map.end()) {
-        for (TaskID dependent_task_id : it->second) {
-            // 检查dependent_task的所有依赖是否都完成
-            if (all_dependencies_satisfied(dependent_task_id)) {
-                ready_queue.push(all_tasks[dependent_task_id]);
-            }
-        }
-        wait_map.erase(it);  // 清理已处理的依赖
-    }
-    
-    // 通知等待的线程
-    queue_cv.notify_all();
-}
-
-bool TaskSystemParallelThreadPoolSleeping::all_dependencies_satisfied(TaskID task_id) {
-    auto task_it = all_tasks.find(task_id);
-    if (task_it == all_tasks.end()) {
-        return false;
-    }
-    
-    // 检查该任务的所有依赖是否都已完成
-    // 这里需要从wait_map中反向查找该任务的依赖
-    for (const auto& pair : wait_map) {
-        for (TaskID dependent_id : pair.second) {
-            if (dependent_id == task_id) {
-                // 如果该任务还在wait_map中，说明还有未完成的依赖
-                if (completed_tasks.find(pair.first) == completed_tasks.end()) {
-                    return false;
-                }
-            }
-        }
-    }
-    
-    return true;
+    completed_cv.wait(lock, [this] { return ready_queue.empty(); });
 }

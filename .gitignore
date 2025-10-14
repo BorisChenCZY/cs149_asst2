@@ -2,3 +2,5 @@
 runtasks.dSYM
 runtasks.*
 
+*.o
+*.obj

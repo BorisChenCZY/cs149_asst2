@@ -188,21 +188,14 @@ TaskSystemParallelThreadPoolSleeping::TaskSystemParallelThreadPoolSleeping(int n
 
     auto thread_run = [&](int thread_id) {
         while (not m_done) {
-	    if (thread_id > m_max_threads) {sched_yield(); continue;}
-            while (not m_runtime.empty())
+            int job = -1;
+            job = m_runtime.pop();
+
+            while (job != -1)
             {
-                auto start_time = std::chrono::high_resolution_clock::now();
-                auto job = m_runtime.pop();
-                if (job == -1) break;
                 m_runtime.run(job);
                 m_runtime.add_complete();
-                auto end_time = std::chrono::high_resolution_clock::now();
-                auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time).count();
-                // if the task is too lightweight, it is not making sense to have so many threads
-                if (duration <= 1) {
-                    m_max_threads = 2;
-                }
-                // std::cout << "Thread " << thread_id << " executed job in " << duration << " microseconds. Max threads: " << m_max_threads << std::endl;
+                job = m_runtime.pop();
             }
 
 

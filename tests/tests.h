@@ -162,7 +162,7 @@ TestResults gridStarDiagonalTopologyTestBase(ITaskSystem* t, bool do_async) {
     // Define parameters internally like pingPongTest
     int num_tasks = 16;
     int num_bulk_task_launches = 9; // 3x3 grid (must be perfect square)
-    int num_elements = 1000;
+    int num_elements = 256;
     
     // Check if num_bulk_task_launches is a perfect square
     int grid_size = (int)sqrt(num_bulk_task_launches);

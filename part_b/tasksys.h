@@ -10,6 +10,7 @@
 #include <condition_variable>
 #include <cassert>
 #include <unordered_map>
+#include <memory>
 
 template <typename ...Args>
 inline void debug_print(const char* msg, Args... args) {
@@ -87,52 +88,140 @@ struct Task {
 
 class DependencyGraph;  // Forward declaration
 
-class Runtime {
+// Lock-free MPSC (Multi-Producer Single-Consumer) queue for tasks
+template<typename T, size_t Size = 1024>
+class LockFreeQueue {
 public:
-    void add_jobs(const std::vector<Job*>& jobs) {
-        std::lock_guard<std::mutex> lock(m_queue_mutex);
+    LockFreeQueue() : head_(0), tail_(0) {
+        // Initialize all slots to empty
+        for (size_t i = 0; i < Size; i++) {
+            slots_[i].state.store(EMPTY, std::memory_order_relaxed);
+        }
+    }
 
-        // Reset counters - this is safe because sync() waits for completion before calling this
-        m_complete_tasks.store(0);
-        m_total_tasks = 0;
+    // Producer: enqueue (lock-free, multi-producer safe)
+    bool enqueue(const T& item) {
+        while (true) {
+            size_t head = head_.load(std::memory_order_relaxed);
+            size_t slot_idx = head % Size;
 
-        // Add all tasks from all jobs to the queue
-        for (const auto& job : jobs) {
-            for (int i = 0; i < job->total_tasks; i++) {
-                Task task;
-                task.runnable = job->runnable;
-                task.task_id = i;
-                task.total_tasks = job->total_tasks;
-                task.job_id = job->job_id;
-                m_tasks.push(task);
-                m_total_tasks++;
+            int expected = EMPTY;
+            // Try to claim this slot
+            if (slots_[slot_idx].state.compare_exchange_weak(expected, WRITING,
+                                                              std::memory_order_acquire,
+                                                              std::memory_order_relaxed)) {
+                // We claimed the slot, write the data
+                slots_[slot_idx].data = item;
+                slots_[slot_idx].state.store(READY, std::memory_order_release);
+
+                // Try to advance head
+                head_.compare_exchange_weak(head, head + 1, std::memory_order_release, std::memory_order_relaxed);
+                return true;
+            }
+
+            // Slot is not empty, try to advance head and retry
+            if (expected == READY) {
+                head_.compare_exchange_weak(head, head + 1, std::memory_order_release, std::memory_order_relaxed);
+            }
+
+            // Check if queue is full
+            size_t current_tail = tail_.load(std::memory_order_acquire);
+            if (head - current_tail >= Size) {
+                return false; // Queue full
             }
         }
-        m_task_cv.notify_all();
+    }
+
+    // Consumer: dequeue (single consumer, no contention)
+    bool dequeue(T& item) {
+        size_t tail = tail_.load(std::memory_order_relaxed);
+        size_t slot_idx = tail % Size;
+
+        int state = slots_[slot_idx].state.load(std::memory_order_acquire);
+        if (state == READY) {
+            item = slots_[slot_idx].data;
+            slots_[slot_idx].state.store(EMPTY, std::memory_order_release);
+            tail_.store(tail + 1, std::memory_order_release);
+            return true;
+        }
+        return false; // Queue empty or slot being written
+    }
+
+    // Check if empty (for consumer)
+    bool empty() const {
+        size_t tail = tail_.load(std::memory_order_acquire);
+        size_t slot_idx = tail % Size;
+        return slots_[slot_idx].state.load(std::memory_order_acquire) != READY;
+    }
+
+private:
+    enum SlotState {
+        EMPTY = 0,
+        WRITING = 1,
+        READY = 2
+    };
+
+    struct Slot {
+        std::atomic<int> state;
+        T data;
+    };
+
+    alignas(64) std::atomic<size_t> head_; // Producer index
+    alignas(64) std::atomic<size_t> tail_; // Consumer index
+    Slot slots_[Size];
+};
+
+class ThreadRuntime {
+public:
+    ThreadRuntime() = default;
+    ThreadRuntime(const ThreadRuntime&) = delete;
+    ThreadRuntime& operator=(const ThreadRuntime&) = delete;
+    ThreadRuntime(ThreadRuntime&&) = delete;
+    ThreadRuntime& operator=(ThreadRuntime&&) = delete;
+
+    // Lock-free queue for tasks
+    LockFreeQueue<Task> m_tasks;
+
+    // Mutex and CV only for sleeping/waking (not for queue access)
+    std::mutex m_cv_mutex;
+    std::condition_variable m_task_cv;
+};
+
+class Runtime {
+public:
+    Runtime() : m_num_threads(0) {}
+
+    void init(int num_threads) {
+        m_num_threads = num_threads;
+        m_thread_runtimes.reserve(num_threads);
+        for (int i = 0; i < num_threads; i++) {
+            m_thread_runtimes.push_back(std::unique_ptr<ThreadRuntime>(new ThreadRuntime()));
+        }
     }
 
     void add_job(IRunnable* runnable, int total_tasks) {
-        std::lock_guard<std::mutex> lock(m_queue_mutex);
-
         // Reset counters - this is safe because run() waits for completion before calling this
         m_complete_tasks.store(0);
-        m_total_tasks = 0;
+        m_total_tasks = total_tasks;
 
+        // Distribute tasks round-robin using lock-free enqueue
         for (int i = 0; i < total_tasks; i++) {
+            int target_thread = i % m_num_threads;
             Task task;
             task.runnable = runnable;
             task.task_id = i;
             task.total_tasks = total_tasks;
             task.job_id = -1;
-            m_tasks.push(task);
-            m_total_tasks++;
-        }
-        m_task_cv.notify_all();
-    }
 
-    bool empty() {
-        std::lock_guard<std::mutex> lock(m_queue_mutex);
-        return m_tasks.empty();
+            // Lock-free enqueue
+            m_thread_runtimes[target_thread]->m_tasks.enqueue(task);
+
+        }
+
+        for (int i = 0; i < m_num_threads; i++) {
+            std::lock_guard<std::mutex> lock(m_thread_runtimes[i]->m_cv_mutex);
+            m_thread_runtimes[i]->m_task_cv.notify_one();
+        }
     }
 
     void add_complete() {
@@ -156,9 +245,8 @@ public:
         return m_jobs_completed.load() >= m_total_jobs;
     }
 
-    std::mutex m_queue_mutex;
-    std::condition_variable m_task_cv;
-    std::queue<Task> m_tasks;
+    std::vector<std::unique_ptr<ThreadRuntime>> m_thread_runtimes;
+    int m_num_threads;
     int m_total_tasks;
     std::atomic<int> m_complete_tasks{0};
 
@@ -274,7 +362,7 @@ class TaskSystemParallelThreadPoolSleeping: public ITaskSystem {
         std::atomic<bool> m_done{false};
         std::mutex m_completed_mutex;
         std::condition_variable m_completed_cv;
-        int m_max_threads = 0;
+        int m_num_threads = 0;
 };
 
 #endif

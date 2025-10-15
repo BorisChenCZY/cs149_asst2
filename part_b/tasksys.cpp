@@ -133,24 +133,36 @@ TaskSystemParallelThreadPoolSleeping::TaskSystemParallelThreadPoolSleeping(int n
     // Implementations are free to add new class member variables
     // (requiring changes to tasksys.h).
     //
+    m_num_threads = num_threads;
+    m_runtime.init(num_threads);
 
     auto thread_run = [&](int thread_id) {
         while (true) {
             Task task;
-            {
-                std::unique_lock<std::mutex> lock(m_runtime.m_queue_mutex);
-                m_runtime.m_task_cv.wait(lock, [&]{
-                    return !m_runtime.m_tasks.empty() || m_done.load();
-                });
+            bool has_task = false;
 
-                if (m_done.load() && m_runtime.m_tasks.empty()) {
+            // Try lock-free dequeue first
+            has_task = m_runtime.m_thread_runtimes[thread_id]->m_tasks.dequeue(task);
+
+            // If no task, wait on condition variable
+            if (!has_task) {
+                /*
+                std::unique_lock<std::mutex> lock(m_runtime.m_thread_runtimes[thread_id]->m_cv_mutex);
+                m_runtime.m_thread_runtimes[thread_id]->m_task_cv.wait(lock, [&]{
+                    return !m_runtime.m_thread_runtimes[thread_id]->m_tasks.empty() || m_done.load();
+                });
+                */
+
+                if (m_done.load() && m_runtime.m_thread_runtimes[thread_id]->m_tasks.empty()) {
                     break;
                 }
 
-                if (!m_runtime.m_tasks.empty()) {
-                    task = m_runtime.m_tasks.front();
-                    m_runtime.m_tasks.pop();
-                }
+                // Try to dequeue again after waking up
+                has_task = m_runtime.m_thread_runtimes[thread_id]->m_tasks.dequeue(task);
+            }
+
+            if (!has_task) {
+                continue; // Spurious wakeup, loop again
             }
 
             if (task.runnable != nullptr) {
@@ -181,31 +193,29 @@ TaskSystemParallelThreadPoolSleeping::TaskSystemParallelThreadPoolSleeping(int n
                             }
                         }
 
-                        // Add tasks for newly ready jobs
+                        // Add tasks for newly ready jobs (distribute round-robin, lock-free)
                         if (!newly_ready.empty()) {
-                            int total_new_tasks = 0;
+                            int task_counter = 0;
+                            for (Job* job : newly_ready) {
+                                for (int i = 0; i < job->total_tasks; i++) {
+                                    int target_thread = task_counter % m_num_threads;
+                                    Task new_task;
+                                    new_task.runnable = job->runnable;
+                                    new_task.task_id = i;
+                                    new_task.total_tasks = job->total_tasks;
+                                    new_task.job_id = job->job_id;
 
-                            // Add all tasks at once while holding the lock
-                            {
-                                std::lock_guard<std::mutex> lock(m_runtime.m_queue_mutex);
-                                for (Job* job : newly_ready) {
-                                    for (int i = 0; i < job->total_tasks; i++) {
-                                        Task new_task;
-                                        new_task.runnable = job->runnable;
-                                        new_task.task_id = i;
-                                        new_task.total_tasks = job->total_tasks;
-                                        new_task.job_id = job->job_id;
-                                        m_runtime.m_tasks.push(new_task);
-                                        total_new_tasks++;
-                                    }
+                                    // Lock-free enqueue
+                                    m_runtime.m_thread_runtimes[target_thread]->m_tasks.enqueue(new_task);
+
+                                    task_counter++;
                                 }
+
                             }
 
-                            // Wake up workers proportional to tasks added
-                            if (total_new_tasks > 1) {
-                                m_runtime.m_task_cv.notify_all();
-                            } else {
-                                m_runtime.m_task_cv.notify_one();
+                            for (int i = 0; i < m_num_threads; i++) {
+                                std::lock_guard<std::mutex> lock(m_runtime.m_thread_runtimes[i]->m_cv_mutex);
+                                m_runtime.m_thread_runtimes[i]->m_task_cv.notify_one();
                             }
                         }
 
@@ -225,10 +235,6 @@ TaskSystemParallelThreadPoolSleeping::TaskSystemParallelThreadPoolSleeping(int n
                     m_completed_cv.notify_one();
                 }
             }
-            else 
-            {
-                std::this_thread::yield();
-            }
         }
     };
 
@@ -246,7 +252,11 @@ TaskSystemParallelThreadPoolSleeping::~TaskSystemParallelThreadPoolSleeping() {
     // (requiring changes to tasksys.h).
     //
     m_done = true;
-    m_runtime.m_task_cv.notify_all();  // Wake up all workers
+    // Wake up all workers on their individual queues
+    for (int i = 0; i < m_num_threads; i++) {
+        std::lock_guard<std::mutex> lock(m_runtime.m_thread_runtimes[i]->m_cv_mutex);
+        m_runtime.m_thread_runtimes[i]->m_task_cv.notify_all();
+    }
     for (auto &t: m_threads)
     {
         t.join();
@@ -312,20 +322,30 @@ void TaskSystemParallelThreadPoolSleeping::sync() {
         }
     }
 
-    // Add initially ready jobs to the queue
+    // Add initially ready jobs to the queue (distribute round-robin, lock-free)
     if (!initial_ready.empty()) {
-        std::lock_guard<std::mutex> lock(m_runtime.m_queue_mutex);
+        int task_counter = 0;
         for (Job* job : initial_ready) {
             for (int i = 0; i < job->total_tasks; i++) {
+                int target_thread = task_counter % m_num_threads;
                 Task task;
                 task.runnable = job->runnable;
                 task.task_id = i;
                 task.total_tasks = job->total_tasks;
                 task.job_id = job->job_id;
-                m_runtime.m_tasks.push(task);
+
+                // Lock-free enqueue
+                m_runtime.m_thread_runtimes[target_thread]->m_tasks.enqueue(task);
+
+                task_counter++;
             }
         }
-        m_runtime.m_task_cv.notify_all();
+
+        for (int i = 0; i < m_num_threads; i++) {
+            std::lock_guard<std::mutex> lock(m_runtime.m_thread_runtimes[i]->m_cv_mutex);
+            m_runtime.m_thread_runtimes[i]->m_task_cv.notify_one();
+        }
+
         debug_print("Main thread: Added %zu initial jobs to queue\n", initial_ready.size());
     }
 

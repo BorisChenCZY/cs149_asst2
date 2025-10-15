@@ -205,6 +205,8 @@ TaskSystemParallelThreadPoolSleeping::TaskSystemParallelThreadPoolSleeping(int n
                     m_completed_cv.notify_all();
                 }
             }
+
+            std::this_thread::yield();
         }
     };
 

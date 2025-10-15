@@ -139,9 +139,12 @@ TaskSystemParallelThreadPoolSleeping::TaskSystemParallelThreadPoolSleeping(int n
             Task task;
             {
                 std::unique_lock<std::mutex> lock(m_runtime.m_queue_mutex);
-                m_runtime.m_task_cv.wait(lock, [&]{
-                    return !m_runtime.m_tasks.empty() || m_done.load();
-                });
+                // Busy wait instead of condition variable
+                while (m_runtime.m_tasks.empty() && !m_done.load()) {
+                    lock.unlock();
+                    std::this_thread::yield();
+                    lock.lock();
+                }
 
                 if (m_done.load() && m_runtime.m_tasks.empty()) {
                     break;

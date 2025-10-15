@@ -127,19 +127,11 @@ const char* TaskSystemParallelThreadPoolSleeping::name() {
 }
 
 TaskSystemParallelThreadPoolSleeping::TaskSystemParallelThreadPoolSleeping(int num_threads): ITaskSystem(num_threads) {
-    //
-    // TODO: CS149 student implementations may decide to perform setup
-    // operations (such as thread pool construction) here.
-    // Implementations are free to add new class member variables
-    // (requiring changes to tasksys.h).
-    //
-
     auto thread_run = [&](int thread_id) {
         while (true) {
             Task task;
             {
                 std::unique_lock<std::mutex> lock(m_runtime.m_queue_mutex);
-                // Busy wait instead of condition variable
                 while (m_runtime.m_tasks.empty() && !m_done.load()) {
                     lock.unlock();
                     std::this_thread::yield();
@@ -160,36 +152,28 @@ TaskSystemParallelThreadPoolSleeping::TaskSystemParallelThreadPoolSleeping(int n
                 task.runnable->runTask(task.task_id, task.total_tasks);
                 m_runtime.add_complete();
 
-                // Check if this was the last task of a job (for dependency-driven execution)
-                if (task.job_id >= 0 && m_runtime.m_dep_graph != nullptr) {
-                    Job* current_job = m_dep_graph.get_job(task.job_id);
+                DependencyGraph* dep_graph = m_runtime.get_dep_graph();
+                if (task.job_id >= 0 && dep_graph != nullptr) {
+                    Job* current_job = dep_graph->get_job(task.job_id);
                     int remaining = current_job->tasks_remaining.fetch_sub(1) - 1;
 
                     if (remaining == 0) {
-                        // This job is complete - process dependents
-                        debug_print("Worker %d: Job %d completed, checking dependents\n", thread_id, task.job_id);
+                        bool expected = false;
+                        if (current_job->completion_processed.compare_exchange_strong(expected, true)) {
+                            const std::vector<TaskID>& dependents = dep_graph->get_dependents(task.job_id);
 
-                        const std::vector<TaskID>& dependents = m_dep_graph.get_dependents(task.job_id);
-
-                        std::vector<Job*> newly_ready;
-                        for (TaskID dep_id : dependents) {
-                            Job* dependent_job = m_dep_graph.get_job(dep_id);
-                            if (dependent_job != nullptr) {
-                                int deps_remaining = dependent_job->remaining_deps.fetch_sub(1) - 1;
-                                if (deps_remaining == 0) {
-                                    // This dependent is now ready
-                                    newly_ready.push_back(dependent_job);
-                                    debug_print("Worker %d: Job %d is now ready\n", thread_id, dep_id);
+                            std::vector<Job*> newly_ready;
+                            for (TaskID dep_id : dependents) {
+                                Job* dependent_job = dep_graph->get_job(dep_id);
+                                if (dependent_job != nullptr) {
+                                    int deps_remaining = dependent_job->remaining_deps.fetch_sub(1) - 1;
+                                    if (deps_remaining == 0) {
+                                        newly_ready.push_back(dependent_job);
+                                    }
                                 }
                             }
-                        }
 
-                        // Add tasks for newly ready jobs
-                        if (!newly_ready.empty()) {
-                            int total_new_tasks = 0;
-
-                            // Add all tasks at once while holding the lock
-                            {
+                            if (!newly_ready.empty()) {
                                 std::lock_guard<std::mutex> lock(m_runtime.m_queue_mutex);
                                 for (Job* job : newly_ready) {
                                     for (int i = 0; i < job->total_tasks; i++) {
@@ -199,123 +183,66 @@ TaskSystemParallelThreadPoolSleeping::TaskSystemParallelThreadPoolSleeping(int n
                                         new_task.total_tasks = job->total_tasks;
                                         new_task.job_id = job->job_id;
                                         m_runtime.m_tasks.push(new_task);
-                                        total_new_tasks++;
                                     }
                                 }
                             }
 
-                            // Wake up workers proportional to tasks added
-                            if (total_new_tasks > 1) {
-                                m_runtime.m_task_cv.notify_all();
-                            } else {
-                                m_runtime.m_task_cv.notify_one();
+                            m_runtime.m_jobs_completed.fetch_add(1);
+                            if (m_runtime.all_jobs_complete()) {
+                                m_completed_cv.notify_one();
                             }
-                        }
-
-                        // Increment jobs completed counter
-                        size_t completed = m_runtime.m_jobs_completed.fetch_add(1) + 1;
-                        debug_print("Worker %d: Jobs completed: %zu / %zu\n", thread_id, completed, m_runtime.m_total_jobs);
-
-                        // Notify main thread if all jobs complete (for dependency-driven execution)
-                        if (m_runtime.all_jobs_complete()) {
-                            m_completed_cv.notify_one();
                         }
                     }
                 }
 
-                // Notify main thread if all tasks complete (for simple run())
-                if (m_runtime.m_dep_graph == nullptr && m_runtime.is_all_complete()) {
+                if (m_runtime.get_dep_graph() == nullptr && m_runtime.is_all_complete()) {
                     m_completed_cv.notify_one();
                 }
-            }
-            else 
-            {
+            } else {
                 std::this_thread::yield();
             }
         }
     };
 
-    for (int i = 0; i < num_threads; i++) 
-    {
+    for (int i = 0; i < num_threads; i++) {
         m_threads.emplace_back(thread_run, i);
     }
 }
 
 TaskSystemParallelThreadPoolSleeping::~TaskSystemParallelThreadPoolSleeping() {
-    //
-    // TODO: CS149 student implementations may decide to perform cleanup
-    // operations (such as thread pool shutdown construction) here.
-    // Implementations are free to add new class member variables
-    // (requiring changes to tasksys.h).
-    //
     m_done = true;
-    m_runtime.m_task_cv.notify_all();  // Wake up all workers
-    for (auto &t: m_threads)
-    {
+    for (auto &t: m_threads) {
         t.join();
     }
 }
 
 void TaskSystemParallelThreadPoolSleeping::run(IRunnable* runnable, int num_total_tasks) {
-
-
-    //
-    // TODO: CS149 students will modify the implementation of this
-    // method in Parts A and B.  The implementation provided below runs all
-    // tasks sequentially on the calling thread.
-    //
-
-    debug_print("Main thread adding job with %d tasks\n", num_total_tasks);
     m_runtime.add_job(runnable, num_total_tasks);
-    
-    {
-        std::unique_lock<std::mutex> lock(m_completed_mutex);
-        m_completed_cv.wait(lock, [&]{ return m_runtime.is_all_complete(); });
-    }
 
-    debug_print("Main thread job finished\n");
+    std::unique_lock<std::mutex> lock(m_completed_mutex);
+    m_completed_cv.wait(lock, [&]{ return m_runtime.is_all_complete(); });
 }
 
 TaskID TaskSystemParallelThreadPoolSleeping::runAsyncWithDeps(IRunnable* runnable, int num_total_tasks,
                                                     const std::vector<TaskID>& deps) {
-
-
-    //
-    // TODO: CS149 students will implement this method in Part B.
-    //
-
     return m_dep_graph.add_job(runnable, num_total_tasks, deps);
 }
 
 void TaskSystemParallelThreadPoolSleeping::sync() {
-
-    //
-    // Pipelined execution: workers handle dependency resolution,
-    // main thread just initializes and waits once
-    //
-
     size_t total_jobs = m_dep_graph.size();
     if (total_jobs == 0) return;
 
-    debug_print("Main thread: Starting sync with %zu jobs\n", total_jobs);
-
-    // Set up dependency graph pointer for workers
     m_runtime.set_dep_graph(&m_dep_graph);
-
-    // Initialize job tracking
     m_runtime.init_job_tracking(total_jobs);
 
-    // Find initially ready jobs (jobs with no dependencies)
     std::vector<Job*> initial_ready;
     for (size_t job_id = 0; job_id < total_jobs; job_id++) {
         Job* job = m_dep_graph.get_job(job_id);
         if (job != nullptr && job->remaining_deps.load() == 0) {
             initial_ready.push_back(job);
-            debug_print("Main thread: Job %d initially ready (no deps)\n", job_id);
         }
     }
 
-    // Add initially ready jobs to the queue
     if (!initial_ready.empty()) {
         std::lock_guard<std::mutex> lock(m_runtime.m_queue_mutex);
         for (Job* job : initial_ready) {
@@ -328,19 +255,19 @@ void TaskSystemParallelThreadPoolSleeping::sync() {
                 m_runtime.m_tasks.push(task);
             }
         }
-        m_runtime.m_task_cv.notify_all();
-        debug_print("Main thread: Added %zu initial jobs to queue\n", initial_ready.size());
     }
 
-    // Wait once for all jobs to complete (workers handle dependency resolution)
     {
         std::unique_lock<std::mutex> lock(m_completed_mutex);
         m_completed_cv.wait(lock, [&]{ return m_runtime.all_jobs_complete(); });
     }
 
-    debug_print("Main thread: All %zu jobs completed\n", total_jobs);
-
-    // Clean up
     m_runtime.set_dep_graph(nullptr);
-    return;
+
+    for (Job* job : m_dep_graph.m_jobs) {
+        delete job;
+    }
+    m_dep_graph.m_jobs.clear();
+    m_dep_graph.m_topo_order.clear();
+    m_dep_graph.m_dependents.clear();
 }

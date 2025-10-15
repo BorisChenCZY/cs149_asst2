@@ -76,6 +76,7 @@ struct Job {
     int job_id;
     std::atomic<int> remaining_deps{0};
     std::atomic<int> tasks_remaining{0};
+    std::atomic<bool> completion_processed{false};  // Ensure only one thread processes completion
 };
 
 struct Task {
@@ -91,12 +92,9 @@ class Runtime {
 public:
     void add_jobs(const std::vector<Job*>& jobs) {
         std::lock_guard<std::mutex> lock(m_queue_mutex);
-
-        // Reset counters - this is safe because sync() waits for completion before calling this
         m_complete_tasks.store(0);
         m_total_tasks = 0;
 
-        // Add all tasks from all jobs to the queue
         for (const auto& job : jobs) {
             for (int i = 0; i < job->total_tasks; i++) {
                 Task task;
@@ -108,13 +106,10 @@ public:
                 m_total_tasks++;
             }
         }
-        m_task_cv.notify_all();
     }
 
     void add_job(IRunnable* runnable, int total_tasks) {
         std::lock_guard<std::mutex> lock(m_queue_mutex);
-
-        // Reset counters - this is safe because run() waits for completion before calling this
         m_complete_tasks.store(0);
         m_total_tasks = 0;
 
@@ -127,7 +122,6 @@ public:
             m_tasks.push(task);
             m_total_tasks++;
         }
-        m_task_cv.notify_all();
     }
 
     bool empty() {
@@ -144,7 +138,11 @@ public:
     }
 
     void set_dep_graph(DependencyGraph* dep_graph) {
-        m_dep_graph = dep_graph;
+        m_dep_graph.store(dep_graph, std::memory_order_release);
+    }
+
+    DependencyGraph* get_dep_graph() {
+        return m_dep_graph.load(std::memory_order_acquire);
     }
 
     void init_job_tracking(size_t num_jobs) {
@@ -157,13 +155,12 @@ public:
     }
 
     std::mutex m_queue_mutex;
-    std::condition_variable m_task_cv;
     std::queue<Task> m_tasks;
     int m_total_tasks;
     std::atomic<int> m_complete_tasks{0};
 
     // Dependency-driven execution tracking
-    DependencyGraph* m_dep_graph = nullptr;
+    std::atomic<DependencyGraph*> m_dep_graph{nullptr};
     std::atomic<size_t> m_jobs_completed{0};
     size_t m_total_jobs = 0;
 };
